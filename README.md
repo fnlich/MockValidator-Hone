@@ -36,6 +36,31 @@ cannot tell whether you meant a path or a package name.
 
 ### On Windows
 
+`bittensor-wallet` and `bittensor-drand` publish macOS and manylinux wheels only — **no
+Windows wheels at any version** — so `pip install -e ".[chain]"` falls back to their sdists
+and tries to bootstrap a Rust toolchain, which typically dies in `rustup-init`. Choosing a
+different Python version does not help.
+
+You do not need that stack to use this harness. Install without `[chain]`:
+
+```powershell
+pip install -e ".[miner]"          # in the hone-subnet checkout
+pip install -e "..\MockValidator-Hone"
+```
+
+With no sr25519 stack importable, `rlvr.protocol` signs and verifies with a deterministic
+HMAC instead — the path it ships for local simulation — and the harness uses `sim-<name>`
+identities rather than ss58 addresses. The full round trip works, and the rejection paths
+still reject: an unauthorized validator is 403, a wrong miner identity is 401, and an
+ss58-shaped signer is refused outright rather than downgraded to HMAC.
+
+What you lose is real sr25519, so this mode does not prove your signing against a live
+validator. Use WSL2 (or Linux/macOS) for that, which is also what the subnet's own README
+requires for a validator.
+
+#### Grading executor
+
+
 Grade with `--executor docker` (Docker Desktop). The default `subprocess` executor is
 POSIX-only in one specific place: its timeout path calls `os.killpg`/`os.getpgid`, which do
 not exist on Windows, and the surrounding `except` catches `OSError` but not the

@@ -87,7 +87,44 @@ VALIDATOR_URI = "//HoneHarnessValidator"
 DEFAULT_MINER_URI = "//HoneHarnessMiner"
 
 
+class _SimIdentity:
+    """A stand-in identity for hosts with no sr25519 stack (notably Windows).
+
+    ``bittensor-wallet`` and ``bittensor-drand`` publish macOS and manylinux
+    wheels only, so on Windows pip falls back to their sdists and tries to
+    bootstrap a Rust toolchain. The subnet does not need that here: when no
+    crypto stack is importable, ``rlvr.protocol`` signs and verifies with a
+    deterministic HMAC instead — the path it provides for local simulation.
+
+    The identifier deliberately contains a hyphen so it cannot be mistaken for
+    an ss58 address; ``verify_signature`` fails closed on an ss58-looking signer
+    when real crypto is unavailable, and would reject these otherwise.
+    """
+
+    def __init__(self, uri: str):
+        self.ss58_address = "sim-" + uri.lstrip("/")
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return f"<sim identity {self.ss58_address}>"
+
+
+def crypto_available() -> bool:
+    """True when a real sr25519 keypair can be built on this host."""
+    try:
+        import bittensor_wallet  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def keypair(uri: str):
+    """Real sr25519 keypair where possible, else a simulation identity.
+
+    Mixing the two would not round-trip — a simulated validator cannot sign for
+    a real miner hotkey — so a host either has crypto for both ends or neither.
+    """
+    if not crypto_available():
+        return _SimIdentity(uri)
     from bittensor_wallet import Keypair
 
     return Keypair.create_from_uri(uri)
