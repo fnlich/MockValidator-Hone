@@ -17,13 +17,32 @@ Every security-relevant step calls the validator's own code from the `rlvr` pack
 
 ## Install
 
-Requires the subnet package, because the harness grades with the validator's real sandbox:
+Requires the subnet package, because the harness grades with the validator's real sandbox.
+Run these from the **parent directory that holds both clones**, not from inside either one:
 
 ```bash
 git clone https://github.com/hone-subnet-org/hone-subnet
-pip install -e './hone-subnet[chain,miner]'
-pip install -e .
+git clone https://github.com/fnlich/MockValidator-Hone
+
+python3.12 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
+pip install -e "./hone-subnet[chain,miner]"
+pip install -e "./MockValidator-Hone"
 ```
+
+If you are already inside a checkout, use `.` for that one instead — `pip install -e ".[chain,miner]"`.
+Pointing pip at a path that does not exist gives the confusing
+`is not a valid editable requirement` error rather than "no such directory", because pip
+cannot tell whether you meant a path or a package name.
+
+### On Windows
+
+Grade with `--executor docker` (Docker Desktop). The default `subprocess` executor is
+POSIX-only in one specific place: its timeout path calls `os.killpg`/`os.getpgid`, which do
+not exist on Windows, and the surrounding `except` catches `OSError` but not the
+`AttributeError` you actually get. Correct solutions still grade fine; a candidate that
+*times out* is reported as a grading error instead of a timeout. The Docker executor guards
+the same call with `os.name == "posix"`, and everything POSIX then happens inside the Linux
+container — which is also how a real validator grades.
 
 ## Use
 
