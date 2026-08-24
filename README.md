@@ -70,18 +70,80 @@ python mock_validator.py --url http://your-host:8091 --miner-hotkey 5F...
 
 Your miner will reject the harness's key with `403 unauthorized signer`, because it holds no validator permit. Either run it behind `run_local_miner.py`, or start it with `MINER_REQUIRE_VALIDATOR_PERMIT=false` **while testing only**.
 
+## Dispatching to a pool
+
+A real validator deals each problem to many miners at once, and that changes the
+arithmetic: the payment formula's latency term is relative to the **fastest
+correct responder**, so against a single miner it is always `1.0` and the
+0.95-1.0 spread never appears. Pool pass-rate and the difficulty band are
+pool-level signals too.
+
+```bash
+python mock_validator.py --miner 127.0.0.1:8101=//M1 \
+                         --miner 127.0.0.1:8102=//M2 \
+                         --miner 10.0.0.7:8091=5F...
+```
+
+`HOST:PORT[=HOTKEY]`, repeatable. `HOTKEY` is an ss58 address, or a `//Dev` URI
+for local testing; omit it and the harness dev key is used. It is not cosmetic —
+the hotkey is folded into the per-miner request id and must match the reply's
+`Epistula-Signed-By`, so a wrong one makes an honest miner look unauthenticated.
+
+Or from a file, `--miners pool.json`:
+
+```json
+[{"uid": 1, "host": "10.0.0.7", "port": 8091, "hotkey": "5F..."},
+ {"uid": 2, "host": "10.0.0.8", "port": 8091, "hotkey": "5G..."}]
+```
+
+A real round against three miners — one fast and correct, one correct but 3s
+slower, one subtly wrong:
+
+```
+=== run-length-encode ===
+  [PASS] uid1 127.0.0.1:8101      5GzrAe…mNME    5/5 hidden  pay=1.0000    0.02s
+  [PASS] uid2 127.0.0.1:8102      5Fhgqg…5xUm    5/5 hidden  pay=0.9994    3.02s
+  [FAIL] uid3 127.0.0.1:8103      5FC2Qt…FTpv    4/5 hidden  pay=0.0000    0.02s
+  pool pass-rate 67%  band=easy
+
+=== leaderboard over 2 graded problem(s), 1 skipped ===
+  1. uid1 127.0.0.1:8101      solved 2/2   payment 2.0000   weight share  40.0%
+  2. uid2 127.0.0.1:8102      solved 2/2   payment 1.9989   weight share  40.0%
+  3. uid3 127.0.0.1:8103      solved 1/2   payment 1.0000   weight share  20.0%
+```
+
+Three things to read out of that. `pay=0.9994` is the latency tiebreaker being
+applied for real — `0.95 + 0.05·2^(-3000/180000)`. `4/5 hidden` pays **zero**.
+And uid1 and uid2 differ by 0.001 in payment yet land on the same 40.0% weight
+share, which is the flat-scoring compression the subnet is built on.
+
+Fan-out is concurrent, with dispatch and grading throttled separately
+(`--dispatch-concurrency`, `--verify-concurrency`) — the same split the real
+validator makes between its I/O-bound fan-out and its sandbox-bound grading.
+
+To run several local miners for testing, give each its own port and hotkey:
+
+```bash
+python run_local_miner.py --port 8101 --miner-uri //M1 --solver mypkg:FastSolver
+python run_local_miner.py --port 8102 --miner-uri //M2 --solver mypkg:OtherSolver
+```
+
 ### Options
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--url` | `http://127.0.0.1:8091` | Miner base URL |
+| `--miner` | — | `HOST:PORT[=HOTKEY]`, repeatable, one per miner |
+| `--miners` | — | JSON file describing the pool |
+| `--url` | `http://127.0.0.1:8091` | Single-miner shorthand |
+| `--dispatch-concurrency` | `64` | Miners contacted at once |
+| `--verify-concurrency` | `4` | Sandboxes grading at once |
 | `--problem` | (all) | Only problems whose name contains this substring |
 | `--miner-hotkey` | harness dev key | The miner's ss58 hotkey |
 | `--executor` | `subprocess` | Grading sandbox; `docker` also enables Rust |
 | `--deadline` | `120` | Seconds advertised to the miner |
 | `-v` | off | Print the code the miner returned |
 
-Exit status is `0` when every graded problem fully passed, `1` otherwise, so it drops straight into CI.
+Exit status is `0` when at least one miner fully solved every graded problem, `1` otherwise, so it drops straight into CI.
 
 ## Problems
 

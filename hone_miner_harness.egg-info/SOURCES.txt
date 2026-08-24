@@ -1,0 +1,10 @@
+README.md
+mock_validator.py
+pyproject.toml
+run_local_miner.py
+hone_miner_harness.egg-info/PKG-INFO
+hone_miner_harness.egg-info/SOURCES.txt
+hone_miner_harness.egg-info/dependency_links.txt
+hone_miner_harness.egg-info/requires.txt
+hone_miner_harness.egg-info/top_level.txt
+tests/test_harness.py

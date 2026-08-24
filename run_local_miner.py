@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 import sys
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -71,15 +72,40 @@ class EchoSolver:
 
 
 def load_solver(spec: str):
+    """Resolve ``module:attribute`` to a Solver INSTANCE.
+
+    The class case must be detected with ``inspect.isclass`` rather than by
+    asking whether the target has ``solve_task``: a class carries its methods as
+    attributes, so an attribute test reports "already an instance" for a class,
+    the class is never constructed, and the miner ends up calling ``solve_task``
+    unbound with the task as ``self``. That fails on every single request while
+    looking like a bug in the user's solver.
+    """
     if ":" not in spec:
         raise SystemExit("--solver must look like module:attribute")
     module_name, attribute = spec.split(":", 1)
-    module = importlib.import_module(module_name)
-    target = getattr(module, attribute)
-    solver = target() if callable(target) and not hasattr(target, "solve_task") else target
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise SystemExit(f"cannot import {module_name!r}: {exc}") from None
+    try:
+        target = getattr(module, attribute)
+    except AttributeError:
+        raise SystemExit(f"{module_name!r} has no attribute {attribute!r}") from None
+
+    if inspect.isclass(target):
+        solver = target()                    # a Solver class -> instantiate it
+    elif callable(target) and not hasattr(target, "solve_task"):
+        solver = target()                    # a factory returning a Solver
+    else:
+        solver = target                      # already a Solver instance
+
     for method in ("solve_task", "aclose"):
-        if not hasattr(solver, method):
-            raise SystemExit(f"{spec} has no {method}(); it is not a Solver")
+        if not callable(getattr(solver, method, None)):
+            raise SystemExit(
+                f"{spec} resolved to {solver!r}, which has no callable {method}(); "
+                "a Solver needs async solve_task(task, timeout_s) and aclose()"
+            )
     return solver
 
 

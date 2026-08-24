@@ -1,0 +1,2 @@
+mock_validator
+run_local_miner
