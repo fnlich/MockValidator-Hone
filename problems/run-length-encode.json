@@ -1,0 +1,17 @@
+{
+  "name": "run-length-encode",
+  "language": "python",
+  "entrypoint": "encode",
+  "statement": "Given a string s, return its run-length encoding as a list of [character, count] pairs, in order of first appearance of each run.\n\nFor s = \"aaabbc\" the answer is [[\"a\", 3], [\"b\", 2], [\"c\", 1]].\nFor the empty string the answer is the empty list.",
+  "public_examples": [
+    {"args": ["aaabbc"], "kwargs": {}, "expected": [["a", 3], ["b", 2], ["c", 1]]},
+    {"args": ["x"], "kwargs": {}, "expected": [["x", 1]]}
+  ],
+  "hidden_tests": [
+    {"args": ["aaabbc"], "kwargs": {}, "expected": [["a", 3], ["b", 2], ["c", 1]]},
+    {"args": [""], "kwargs": {}, "expected": []},
+    {"args": ["abc"], "kwargs": {}, "expected": [["a", 1], ["b", 1], ["c", 1]]},
+    {"args": ["aabaa"], "kwargs": {}, "expected": [["a", 2], ["b", 1], ["a", 2]]},
+    {"args": ["zzzzzzzzzz"], "kwargs": {}, "expected": [["z", 10]]}
+  ]
+}

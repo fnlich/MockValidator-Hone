@@ -1,0 +1,15 @@
+{
+  "name": "rust-sum-stdin",
+  "language": "rust",
+  "entrypoint": "main",
+  "statement": "Read a line containing an integer N, then a line containing N space-separated 64-bit integers. Print their sum, followed by a newline.\n\nUse only the Rust standard library. Write nothing to stdout except the sum.",
+  "public_examples": [
+    {"args": ["3\n1 2 3\n"], "kwargs": {}, "expected": "6\n"}
+  ],
+  "hidden_tests": [
+    {"args": ["3\n1 2 3\n"], "kwargs": {}, "expected": "6\n"},
+    {"args": ["1\n-5\n"], "kwargs": {}, "expected": "-5\n"},
+    {"args": ["0\n\n"], "kwargs": {}, "expected": "0\n"},
+    {"args": ["4\n1000000000000 1 2 3\n"], "kwargs": {}, "expected": "1000000000006\n"}
+  ]
+}

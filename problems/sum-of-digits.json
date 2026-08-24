@@ -1,0 +1,17 @@
+{
+  "name": "sum-of-digits",
+  "language": "python",
+  "entrypoint": "sum_of_digits",
+  "statement": "Return the sum of the decimal digits of a non-negative integer n.\n\nFor n = 12345 the answer is 15, because 1 + 2 + 3 + 4 + 5 = 15.",
+  "public_examples": [
+    {"args": [12345], "kwargs": {}, "expected": 15},
+    {"args": [7], "kwargs": {}, "expected": 7}
+  ],
+  "hidden_tests": [
+    {"args": [12345], "kwargs": {}, "expected": 15},
+    {"args": [0], "kwargs": {}, "expected": 0},
+    {"args": [999999999], "kwargs": {}, "expected": 81},
+    {"args": [1000000], "kwargs": {}, "expected": 1},
+    {"args": [10], "kwargs": {}, "expected": 1}
+  ]
+}

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hone-miner-harness"
+version = "0.1.0"
+description = "Local mock validator for testing Hone Subnet (SN5) miners"
+requires-python = ">=3.10,<3.13"
+# rlvr (the subnet package) is an explicit, unpinned prerequisite: the harness
+# grades with the validator's real sandbox and signs with its real crypto, so it
+# must run against whatever revision you are targeting. Install it yourself:
+#   pip install -e './hone-subnet[chain,miner]'
+dependencies = ["httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools]
+py-modules = ["mock_validator", "run_local_miner"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
