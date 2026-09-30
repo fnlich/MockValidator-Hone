@@ -204,3 +204,22 @@ def test_script_output_uses_the_graders_limit_and_overflow_fails(terminal_task):
     verdict = evaluate(ctx, Overflowing())
     assert seen["max_output_bytes"] == 1 << 20
     assert not verdict.passed and "output limit" in verdict.hint
+
+
+def test_gate_containers_never_outlive_the_clock(stats_task):
+    recipe, ctx = stats_task
+    fix(recipe, ctx)
+    (ctx.checks / "01-median.sh").write_text(MEDIAN_CHECK)
+    timeouts = []
+
+    class Recording(HostRunner):
+        def run(self, root, argv, cwd, **kwargs):
+            timeouts.append(kwargs.get("timeout_s"))
+            return super().run(root, argv, cwd, **kwargs)
+
+    import dataclasses
+
+    evaluate(dataclasses.replace(ctx, time_left=lambda: 7.5), Recording())
+    assert timeouts and all(t <= 7.5 for t in timeouts)
+    out_of_time = evaluate(dataclasses.replace(ctx, time_left=lambda: 0.2), Recording())
+    assert out_of_time.env_error and "time" in out_of_time.output

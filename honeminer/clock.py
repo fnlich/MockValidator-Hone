@@ -130,14 +130,19 @@ class Clock:
         remaining = self.agent_remaining()
         return remaining if own_timeout_s is None else min(own_timeout_s, remaining)
 
+    def final_check_remaining(self) -> float:
+        """Seconds until the final-check reserve ends: gate checks, the final check and the work log fit here,
+        never into the upload and clean-up reserve."""
+
+        return max(0.0, self.reply_remaining() - self.plan.reserve_upload_s - self.plan.reserve_cleanup_s)
+
     def work_log_timeout(self, own_timeout_s: float) -> float:
         """Time box for building the work log: its own limit, but never into the upload and clean-up reserve.
 
         Never below half a second, so the minimal log (built in milliseconds) always has time.
         """
 
-        spare = self.reply_remaining() - self.plan.reserve_upload_s - self.plan.reserve_cleanup_s
-        return max(0.5, min(own_timeout_s, spare))
+        return max(0.5, min(own_timeout_s, self.final_check_remaining()))
 
     def agent_stop_wall(self, wall: Callable[[], float] = time.time) -> float:
         """The agent stop as a UNIX timestamp, for hooks inside the sandbox."""

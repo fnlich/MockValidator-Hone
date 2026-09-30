@@ -1,3 +1,4 @@
+import dataclasses
 import json
 
 import pytest
@@ -201,3 +202,35 @@ def test_an_invalid_final_script_is_never_offered(tmp_path):
     assert _final_script(script) == b"echo ok\n"
     script.write_bytes(b"echo \x00 binary\n")  # the grader rejects it: it must not displace a held script
     assert _final_script(script) is None
+
+
+def test_work_finished_after_the_last_gate_round_is_checked_and_ships(stats_pack, tmp_path):
+    # Round 1 sees the half fix (a check fails); Claude then completes the fix and is killed at the deadline
+    # before stopping again. The final work tree must get its own check instead of losing to the half fix.
+    result, agent, archive, _ = run_solve(stats_pack, tmp_path, [half_fix, full_fix], ended="deadline")
+    assert [r["decision"] for r in agent.replies] == ["block"]
+    assert result.rank is Rank.CHECKED and b"rank = p / 100 * (len(data) - 1)" in result.content
+    assert json.loads((archive.root / "gate.json").read_text())[-1]["round"] == "final"
+
+
+def test_a_slow_test_command_is_kept_and_its_time_comes_from_the_clock(stats_pack, tmp_path):
+    from honeminer.facts import scan
+    from honeminer.selfcheck import Exec
+    from honeminer.solve import verify_facts
+
+    seen = []
+
+    class Slow:
+        def run(self, root, argv, cwd, **kwargs):
+            seen.append(kwargs["timeout_s"])
+            return Exec(124, "", timed_out=True)  # a cold `cargo test` that needs longer
+
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "Cargo.toml").write_text('[package]\nname = "x"\nversion = "0.1.0"\n')
+    facts = dataclasses.replace(scan(base, task_type="repository_patch_v1", instruction="fix it", language="rust"),
+                                test_cmd="cargo test --offline")
+    settings = load_env(None, environ={"HONEMINER_VERIFY_FACTS_S": "45"})
+    verified, tests_pass = verify_facts(facts, base, Slow(), tmp_path, Clock.for_task(settings), settings)
+    assert verified.test_cmd == facts.test_cmd and verified.test_cmd  # unknown, not "cannot start"
+    assert tests_pass is False and seen and all(t <= 45 for t in seen)

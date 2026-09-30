@@ -172,6 +172,7 @@ SETTINGS: dict[str, Setting] = {
     "reserve_upload_s": Setting("HONEMINER_RESERVE_UPLOAD_S", "20", _int(0, 600)),
     "reserve_cleanup_s": Setting("HONEMINER_RESERVE_CLEANUP_S", "5", _int(0, 600)),
     "gate_round_s": Setting("HONEMINER_GATE_ROUND_S", "60", _int(1, 1800)),
+    "verify_facts_s": Setting("HONEMINER_VERIFY_FACTS_S", "180", _int(5, 1800)),
     "audit_round_min_left": Setting("HONEMINER_AUDIT_ROUND_MIN_LEFT", "0.40", _float(0.0, 1.0)),
     "time_notices": Setting("HONEMINER_TIME_NOTICES", "0.50,0.25,0.10", _fractions),
     # Trajectory (work log): built after Claude stops, from recorded traffic; never touches the solve
@@ -227,6 +228,7 @@ class Settings:
     reserve_upload_s: int
     reserve_cleanup_s: int
     gate_round_s: int
+    verify_facts_s: int
     audit_round_min_left: float
     time_notices: tuple[float, ...]
     trajectory: bool

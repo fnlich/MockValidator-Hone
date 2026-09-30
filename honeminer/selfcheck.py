@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -69,6 +70,7 @@ class GateContext:
     submission: Path | None = None  # terminal tasks: host dir holding script.sh
     build_owned: frozenset[str] = frozenset()
     baseline_tests_passed: bool = False
+    time_left: Callable[[], float] | None = None  # seconds this check may still use (from the clock)
 
 
 @dataclass(frozen=True)
@@ -127,9 +129,21 @@ def _copy(source: Path, scratch: Path, name: str) -> Path:
     return target
 
 
+def _timeout(ctx: GateContext, own_s: int = CHECK_TIMEOUT_S) -> int:
+    """A container's timeout: its own limit, but never past what the clock leaves this check."""
+
+    if ctx.time_left is None:
+        return own_s
+    left = ctx.time_left()
+    if left < 1:
+        raise EnvironmentFailure("out of time for this check")
+    return int(max(1, min(own_s, left)))
+
+
 def _run_checks(runner: GateRunner, root: Path, ctx: GateContext, names: list[str], cwd: str) -> dict[str, Exec]:
     return {
-        name: runner.run(root, ("/usr/bin/bash", f"/task/checks/{name}"), cwd, checks=ctx.checks)
+        name: runner.run(root, ("/usr/bin/bash", f"/task/checks/{name}"), cwd, checks=ctx.checks,
+                         timeout_s=_timeout(ctx))
         for name in names
     }
 
@@ -163,7 +177,7 @@ def _evaluate_repository(ctx: GateContext, runner: GateRunner) -> Verdict:
                            hint="Your diff does not apply to the original files.", dropped=patch.dropped)
         rank = Rank.APPLIES
         if facts.build_cmd:
-            built = runner.run(patched, _shell(facts.build_cmd), base_cwd)
+            built = runner.run(patched, _shell(facts.build_cmd), base_cwd, timeout_s=_timeout(ctx))
             if built.exit_code != 0:
                 return Verdict(False, rank, "build", facts.build_cmd, _tail(built.output), content=patch.diff,
                                dropped=patch.dropped)
@@ -180,7 +194,7 @@ def _evaluate_repository(ctx: GateContext, runner: GateRunner) -> Verdict:
 
         original = _copy(ctx.baseline, scratch, "original")
         if facts.build_cmd:
-            runner.run(original, _shell(facts.build_cmd), base_cwd)
+            runner.run(original, _shell(facts.build_cmd), base_cwd, timeout_s=_timeout(ctx))
         before = _run_checks(runner, original, ctx, names, base_cwd)
         results = []
         for name in names:
@@ -196,7 +210,7 @@ def _evaluate_repository(ctx: GateContext, runner: GateRunner) -> Verdict:
             results.append((name, "fail->pass"))
 
         if ctx.baseline_tests_passed and facts.test_cmd:
-            tests = runner.run(patched, _shell(facts.test_cmd), base_cwd)
+            tests = runner.run(patched, _shell(facts.test_cmd), base_cwd, timeout_s=_timeout(ctx))
             if tests.exit_code != 0:
                 return Verdict(False, rank, "existing tests", facts.test_cmd, _tail(tests.output), content=patch.diff,
                                hint="These tests passed on the original code.", dropped=patch.dropped)
@@ -224,7 +238,8 @@ def _evaluate_terminal(ctx: GateContext, runner: GateRunner) -> Verdict:
         scripted = _copy(ctx.baseline, scratch, "scripted")
         # Run exactly as the grader does: its timeout and its 1 MiB output limit (overflow fails the script).
         ran = runner.run(scripted, ("/usr/bin/bash", "--noprofile", "--norc", "/submission/script.sh"), tree_cwd,
-                         submission=ctx.submission, timeout_s=SCRIPT_TIMEOUT_S, max_output_bytes=SCRIPT_OUTPUT_BYTES)
+                         submission=ctx.submission, timeout_s=_timeout(ctx, SCRIPT_TIMEOUT_S),
+                         max_output_bytes=SCRIPT_OUTPUT_BYTES)
         if ran.timed_out or ran.oom_killed or ran.overflow:
             limit = "output limit (1 MiB of stdout or stderr)" if ran.overflow else "time or memory limit"
             return Verdict(False, Rank.STATIC_OK, "script", "bash --noprofile --norc /submission/script.sh",

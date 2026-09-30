@@ -117,3 +117,11 @@ def test_the_work_log_time_box_never_reaches_into_the_upload_reserve():
     assert clock.work_log_timeout(60) == pytest.approx(30)
     times.advance(40)
     assert clock.work_log_timeout(5) == 0.5  # the minimal log still gets its moment
+
+
+def test_the_final_check_may_use_its_reserve_but_never_the_upload_reserve():
+    clock, times = make()
+    times.advance(1100)  # at the agent stop: 30 s final check + 20 s upload + 5 s cleanup before the reply
+    assert clock.final_check_remaining() == pytest.approx(30)
+    times.advance(40)
+    assert clock.final_check_remaining() == 0

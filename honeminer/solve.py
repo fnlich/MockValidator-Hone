@@ -64,6 +64,23 @@ class Gate:
         with self._lock:
             return self._decide()
 
+    def final_check(self) -> None:
+        """Check the work tree Claude left, inside the final-check reserve.
+
+        Taking the lock first also waits for a gate round still in flight, so its verdict is in the keeper
+        before the answer is chosen.
+        """
+
+        with self._lock:
+            if self.clock.final_check_remaining() < 1:
+                return
+            verdict = evaluate(self.ctx, self.runner)
+            if verdict.content and not verdict.env_error:
+                self.keeper.offer(verdict.content, verdict.rank, "final check")
+            self.state.history.append({"round": "final", "passed": verdict.passed, "stage": verdict.stage,
+                                       "hint": verdict.hint, "env_error": verdict.env_error,
+                                       "seconds_left": round(self.clock.final_check_remaining())})
+
     def _decide(self) -> dict:
         if not self.clock.can_start(self.settings.gate_round_s):
             return {"decision": "allow", "note": "time is up"}
@@ -138,7 +155,7 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
     clock = clock or Clock.for_task(settings)
     started = time.monotonic()
     dirs, facts = prepare(pack, archive.root / "task")
-    facts, baseline_tests_passed = verify_facts(facts, dirs.baseline, runner, dirs.root)
+    facts, baseline_tests_passed = verify_facts(facts, dirs.baseline, runner, dirs.root, clock, settings)
     timing = KitTiming(start_epoch=time.time(), agent_stop_epoch=clock.agent_stop_wall(),
                        time_notices=settings.time_notices,
                        gate_timeout_s=max(60, int(clock.agent_remaining())))
@@ -150,7 +167,7 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
     keeper = AnswerKeeper()
     ctx = GateContext(baseline=dirs.baseline, work=dirs.work, checks=dirs.checks, facts=facts,
                       submission=dirs.submission if facts.is_terminal else None,
-                      baseline_tests_passed=baseline_tests_passed)
+                      baseline_tests_passed=baseline_tests_passed, time_left=clock.final_check_remaining)
     gate = Gate(ctx, runner, keeper, clock, settings)
     gateway = gateway_factory(gate, dirs) if gateway_factory else None
     agent_result = None
@@ -161,7 +178,17 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
             archive.write("usage.json", gateway.usage.__dict__)
             gateway.stop()
 
-    # Whatever Claude left behind competes too, so a killed run still ships its best state.
+    # Whatever Claude left behind competes too, so a killed run still ships its best state: it gets one real
+    # check if nothing has checked it yet and nothing better is held.
+    left = _final_script(dirs.submission / "script.sh") if facts.is_terminal else None
+    if not facts.is_terminal:
+        try:
+            left = _final_patch(dirs, facts).diff
+        except PatchBuildError:
+            left = None
+    held = keeper.best
+    if left and keeper.verdict(left) is None and (held is None or held.rank < Rank.CHECKED):
+        gate.final_check()
     if not facts.is_terminal:
         try:
             final = _final_patch(dirs, facts)
@@ -228,6 +255,10 @@ def write_work_log(archive: RunArchive, pack: TaskPack, settings: Settings, cloc
     return {"ok": True, "bytes": len(built.data), "level": built.level, "data": built.data}
 
 
+def _verify_timeout(clock: Clock, settings: Settings) -> int:
+    return max(1, int(clock.call_timeout(settings.verify_facts_s)))
+
+
 def _final_script(path: Path) -> bytes | None:
     """The script Claude left, if the grader would accept it at all (rlvr's validate_script)."""
 
@@ -245,11 +276,13 @@ def _final_patch(dirs: TaskDirs, facts: Facts):
     return build_patch(dirs.baseline, dirs.work, protected=facts.protected)
 
 
-def verify_facts(facts: Facts, baseline: Path, runner: GateRunner, scratch: Path) -> tuple[Facts, bool]:
+def verify_facts(facts: Facts, baseline: Path, runner: GateRunner, scratch: Path, clock: Clock,
+                 settings: Settings) -> tuple[Facts, bool]:
     """Run each command once on a copy of the original; drop the ones that cannot even start.
 
     Returns the facts to show Claude and whether the existing tests pass on the original
-    (only then does the gate require them to keep passing).
+    (only then does the gate require them to keep passing). Each run gets HONEMINER_VERIFY_FACTS_S, never past
+    the agent stop; a command that runs out of time is kept (its result is unknown, not "cannot start").
     """
 
     from dataclasses import replace
@@ -261,14 +294,14 @@ def verify_facts(facts: Facts, baseline: Path, runner: GateRunner, scratch: Path
     shutil.copytree(baseline, copy, symlinks=True)
     build, tests_pass, test_cmd = facts.build_cmd, False, facts.test_cmd
     if build:
-        result = runner.run(copy, _shell(build), cwd, timeout_s=120)
-        if result.exit_code in (126, 127):
+        result = runner.run(copy, _shell(build), cwd, timeout_s=_verify_timeout(clock, settings))
+        if result.exit_code in (126, 127) and not result.timed_out:
             build = None
     if test_cmd:
-        result = runner.run(copy, _shell(test_cmd), cwd, timeout_s=60)
-        if result.exit_code in (126, 127) or result.timed_out:
+        result = runner.run(copy, _shell(test_cmd), cwd, timeout_s=_verify_timeout(clock, settings))
+        if result.exit_code in (126, 127) and not result.timed_out:
             test_cmd = None
-        tests_pass = result.exit_code == 0
+        tests_pass = result.exit_code == 0 and not result.timed_out
     shutil.rmtree(copy, ignore_errors=True)
     return replace(facts, build_cmd=build, test_cmd=test_cmd), tests_pass
 
