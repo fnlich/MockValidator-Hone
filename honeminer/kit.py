@@ -155,7 +155,7 @@ def write_kit(destination: Path, facts: Facts, instruction: str, timing: KitTimi
 
     destination.mkdir(parents=True, exist_ok=False)
     shutil.copytree(TEMPLATES / "hooks", destination / "hooks")
-    for name in ("run_checks.py", "mydiff.py"):
+    for name in ("run_checks.py", "mydiff.py", "forwarder.py"):
         shutil.copy2(TEMPLATES / name, destination / name)
     (destination / "CLAUDE.md").write_text(render_claude_md(facts, timing))
     (destination / "prompt.txt").write_text(render_prompt(facts, instruction))

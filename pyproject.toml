@@ -33,7 +33,7 @@ markers = [
 ]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
@@ -43,3 +43,4 @@ select = ["E", "F", "W", "I", "B", "UP"]
 # Rendered prompt text reads better unwrapped.
 "honeminer/kit.py" = ["E501"]
 "tests/test_kit.py" = ["E501"]
+"tests/test_gateway.py" = ["E501"]
