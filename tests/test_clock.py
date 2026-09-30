@@ -108,3 +108,12 @@ def test_no_other_module_computes_its_own_deadline():
         if re.search(r"expires_at\s*-|time\.time\(\)\s*[+-]|\b280\b", text):
             offenders.append(path.name)
     assert offenders == []
+
+
+def test_the_work_log_time_box_never_reaches_into_the_upload_reserve():
+    clock, times = make()
+    times.advance(1100)  # Claude stopped at the agent stop: the final-check reserve (30 s) is left
+    assert clock.work_log_timeout(5) == 5
+    assert clock.work_log_timeout(60) == pytest.approx(30)
+    times.advance(40)
+    assert clock.work_log_timeout(5) == 0.5  # the minimal log still gets its moment
