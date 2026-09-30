@@ -5,10 +5,12 @@
   "result_tree_path": "project",
   "checks": [
     {
-      "id": "01-summary"
+      "id": "01-summary",
+      "cwd": "project"
     },
     {
-      "id": "02-errors"
+      "id": "02-errors",
+      "cwd": "project"
     }
   ]
 }

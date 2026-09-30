@@ -183,7 +183,9 @@ def _work_cwd(relative: str) -> str:
 
 def _gold_outputs(recipe: Recipe, answer_tree: Path, runner: Runner) -> dict[str, RunOutput]:
     outputs = {}
-    base = recipe.result_tree_path if recipe.is_terminal else recipe.working_directory
+    # rlvr runs terminal checks from /work (not the result tree), repository
+    # checks from /work/<working_directory>; each check's cwd is relative to that.
+    base = "." if recipe.is_terminal else recipe.working_directory
     for check in recipe.checks:
         stdin = (recipe.root / "inputs" / check.stdin_file).read_bytes() if check.stdin_file else b""
         cwd = _work_cwd(posixpath.normpath(posixpath.join(base, check.cwd)))
