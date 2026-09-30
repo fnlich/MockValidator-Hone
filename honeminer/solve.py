@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from honeminer.answer import AnswerKeeper, Rank
-from honeminer.archive import RunArchive
+from honeminer.archive import RunArchive, prune_runs
 from honeminer.clock import Clock
 from honeminer.config import ConfigError, Settings
 from honeminer.facts import Facts, scan
@@ -224,6 +224,9 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
         authorization=settings.anthropic_authorization or None, trajectory_bytes=log.get("bytes"),
         trajectory_level=log.get("level"), trajectory_ok=log.get("ok"),
     )
+    if not settings.archive_workspaces:  # the answer, checks and logs are archived; the trees are not
+        for tree in (dirs.work, dirs.baseline, dirs.root / "scratch"):
+            shutil.rmtree(tree, ignore_errors=True)
     return SolveResult(content, rank, outcome, gate.state.rounds, agent_result, grade, reason or "",
                        trajectory=log.get("data"), trajectory_error=log.get("error", ""))
 
@@ -329,6 +332,7 @@ def solve_with_claude(pack: TaskPack, settings: Settings, *, clock: Clock | None
     remove_orphans()
     runner = DockerGateRunner(image)
     archive = RunArchive.create(Path(settings.runs_dir), pack.name, secrets=(credential,))
+    prune_runs(Path(settings.runs_dir), int(settings.archive_max_gb * 1024**3), keep=archive.root)
     with socket_dir() as sockets:
         return _solve_in_sandbox(pack, settings, archive, sockets, runner=runner, image=image, claude_bin=claude_bin,
                                  credential=credential, clock=clock, work_log=work_log, grade=grade)

@@ -234,3 +234,13 @@ def test_a_slow_test_command_is_kept_and_its_time_comes_from_the_clock(stats_pac
     verified, tests_pass = verify_facts(facts, base, Slow(), tmp_path, Clock.for_task(settings), settings)
     assert verified.test_cmd == facts.test_cmd and verified.test_cmd  # unknown, not "cannot start"
     assert tests_pass is False and seen and all(t <= 45 for t in seen)
+
+
+def test_workspaces_are_kept_only_when_archive_workspaces_is_on(stats_pack, tmp_path):
+    _, _, kept, _ = run_solve(stats_pack, tmp_path / "on", [half_fix, full_fix, lambda d: None],
+                              env={"HONEMINER_ARCHIVE_WORKSPACES": "on"})
+    assert (kept.root / "task" / "work").is_dir()
+    _, _, dropped, _ = run_solve(stats_pack, tmp_path / "off", [half_fix, full_fix, lambda d: None],
+                                 env={"HONEMINER_ARCHIVE_WORKSPACES": "off"})
+    assert not (dropped.root / "task" / "work").exists() and not (dropped.root / "task" / "baseline").exists()
+    assert (dropped.root / "submission.diff").is_file() and (dropped.root / "checks" / "01-median.sh").is_file()

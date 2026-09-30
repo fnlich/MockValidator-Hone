@@ -62,3 +62,42 @@ class RunArchive:
         with index.open("a", encoding="utf-8") as handle:
             handle.write(self.redact(json.dumps(line, default=str).encode()).decode() + "\n")
         return line
+
+
+def _size(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def prune_runs(runs_dir: Path, max_bytes: int, keep: Path | None = None) -> list[Path]:
+    """Delete the oldest run folders until ``runs_dir`` fits ``max_bytes`` (0 = no cap); returns what was removed.
+
+    Only run folders are removed, never the summary files (``index.jsonl``, ``offers.jsonl``, ``notices.jsonl``)
+    and never ``keep`` (the run in progress).
+    """
+
+    import shutil
+
+    runs_dir = Path(runs_dir)
+    if max_bytes <= 0 or not runs_dir.is_dir():
+        return []
+    folders = sorted((p for p in runs_dir.iterdir() if p.is_dir() and not p.is_symlink()),
+                     key=lambda p: p.stat().st_mtime)
+    sizes = {p: _size(p) for p in folders}
+    total = sum(sizes.values()) + sum(p.stat().st_size for p in runs_dir.iterdir() if p.is_file())
+    removed = []
+    for folder in folders:
+        if total <= max_bytes:
+            break
+        if keep is not None and folder.resolve() == Path(keep).resolve():
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        total -= sizes[folder]
+        removed.append(folder)
+    return removed

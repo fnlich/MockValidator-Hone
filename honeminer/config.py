@@ -164,7 +164,6 @@ SETTINGS: dict[str, Setting] = {
     "require_validator_permit": Setting("HONEMINER_REQUIRE_VALIDATOR_PERMIT", "on", _bool),
     # Concurrency
     "slots": Setting("HONEMINER_SLOTS", "1", _int(1, 64)),
-    "backoff_429_s": Setting("HONEMINER_429_BACKOFF_S", "30", _int(0, 3600)),
     # Clock
     "task_budget_s": Setting("HONEMINER_TASK_BUDGET_S", "1200", _int(60, 3600)),
     "expiry_margin_s": Setting("HONEMINER_EXPIRY_MARGIN_S", "45", _int(30, 600)),
@@ -221,7 +220,6 @@ class Settings:
     min_validator_stake: float
     require_validator_permit: bool
     slots: int
-    backoff_429_s: int
     task_budget_s: int
     expiry_margin_s: int
     reserve_final_check_s: int
