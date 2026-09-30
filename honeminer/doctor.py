@@ -78,6 +78,12 @@ def host_checks(settings: Settings) -> list[Check]:
     if settings.live:
         blockers = settings.live_blockers()
         checks.append(Check("live mode", not blockers, "; ".join(blockers) or settings.mode))
+        try:
+            import bittensor  # type: ignore[import-not-found]  # noqa: F401
+            chain = (True, "bittensor importable")
+        except ImportError:
+            chain = (False, "missing: pip install -e '../hone-subnet[miner,chain]'")
+        checks.append(Check("chain extras", *chain))
     return checks
 
 

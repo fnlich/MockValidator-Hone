@@ -139,6 +139,18 @@ def _rehearse(args: argparse.Namespace) -> int:
     return rehearsal.exit_code
 
 
+def _serve(args: argparse.Namespace) -> int:
+    from honeminer.server import run_server
+
+    settings = load_env(args.env_file)
+    if not settings.live:
+        print("serve answers live offers: set HONEMINER_MODE=testnet (or mainnet); "
+              "use `rehearse` to try a round locally", file=sys.stderr)
+        return 2
+    run_server(settings)
+    return 0
+
+
 def _doctor(args: argparse.Namespace) -> int:
     from honeminer.doctor import host_checks, report, spike
 
@@ -182,6 +194,8 @@ def build_parser() -> argparse.ArgumentParser:
     rehearse.add_argument("--trajectory-max-bytes", type=int, default=None,
                           help="trajectory slot size (HONEMINER_REHEARSAL_TRAJECTORY_MAX_BYTES)")
     rehearse.set_defaults(handler=_rehearse)
+    serve = commands.add_parser("serve", help="answer live offers from validators (HONEMINER_MODE=testnet|mainnet)")
+    serve.set_defaults(handler=_serve)
     pack = commands.add_parser("pack", help="build and self-validate task packs from recipes/ (needs Docker)")
     pack.add_argument("recipes", nargs="*", help="recipe names or directories (default: all)")
     pack.add_argument("--out", default="packs", help="output directory (default: packs)")

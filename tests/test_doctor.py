@@ -32,3 +32,34 @@ def test_spike_work_log_check(tmp_path):
                                for e in long_run(2).exchanges))
     check = _spike_work_log(traffic, settings, b"hay.txt\n")
     assert check.ok and "3 model turns" in check.detail
+
+
+def test_live_mode_needs_the_chain_extras(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_bittensor(name, *args, **kwargs):
+        if name == "bittensor":
+            raise ImportError("no bittensor")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_bittensor)
+    checks = host_checks(load_env(None, environ={"HONEMINER_MODE": "testnet"}))
+    chain = next(c for c in checks if c.name == "chain extras")
+    assert not chain.ok and "hone-subnet[miner,chain]" in chain.detail
+
+
+def test_serve_refuses_local_mode(capsys):
+    from honeminer.cli import main
+
+    assert main(["--env-file", "/nonexistent", "serve"]) == 2
+    assert "HONEMINER_MODE=testnet" in capsys.readouterr().err
+
+
+def test_serve_refuses_incomplete_live_settings(monkeypatch, capsys):
+    from honeminer.cli import main
+
+    monkeypatch.setenv("HONEMINER_MODE", "testnet")
+    assert main(["--env-file", "/nonexistent", "serve"]) == 2
+    assert "live mode refused" in capsys.readouterr().err
