@@ -18,6 +18,8 @@
 - rlvr (hone-subnet @ d5786a9) is the oracle: grading, static_rejection, validate_script come from it.
 - Every setting lives in honeminer/config.py and .env.example; nothing else reads os.environ directly.
 - One clock (honeminer/clock.py); no other module computes a deadline or uses a fixed timeout cap.
+  Not deadlines: HTTP clients' network read timeouts, and the in-sandbox hooks' fallback timeouts
+  (the clock cannot reach inside the sandbox; the hooks get their stop time from kit.json).
 - Claude CLI is the only solver backend. Credentials stay in the host gateway, never in the sandbox.
 
 ## Gotchas

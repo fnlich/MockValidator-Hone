@@ -281,6 +281,12 @@ class Settings:
         return shown
 
 
+def host_path() -> str:
+    """The host's PATH, for tools honeminer runs on the host (git). Not a setting: the process environment."""
+
+    return os.environ.get("PATH", "/usr/bin:/bin")
+
+
 def load_env(
     path: str | os.PathLike[str] | None = ".env",
     environ: Mapping[str, str] | None = None,

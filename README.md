@@ -44,7 +44,7 @@ python -m honeminer config      # effective settings, secrets masked
 ```bash
 python -m honeminer doctor            # host checks
 python -m honeminer doctor --spike    # Phase 0 go/no-go: one real sandboxed Claude run through the gateway
-python -m honeminer pack              # build + prove every recipe pack (C, C++, Rust, Go, Python, Node, Java, Bash)
+python -m honeminer pack              # build + prove every recipe pack (C, Rust, Go, Python, Node, Java, Bash; C++ is the committed yaml-cpp pack)
 python -m honeminer kit cpp-yamlcpp   # see the CLAUDE.md and prompt Claude will get
 python -m honeminer solve cpp-yamlcpp --runs 3
 python -m honeminer bench --runs 3    # every pack in packs/; prints pass/fail per run

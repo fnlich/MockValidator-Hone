@@ -29,6 +29,8 @@ from pathlib import Path
 from rlvr.policy import RELEASE_POLICY
 from rlvr.v3.patch import PatchLimits, static_rejection
 
+from honeminer.config import host_path
+
 NEW_FILE_MAX_BYTES = 256 * 1024
 DEFAULT_PROTECTED = (".rlvr/**", ".prebuilt/**")
 BUILD_OUTPUT = (
@@ -73,7 +75,7 @@ class _Index:
             "GIT_CONFIG_GLOBAL": os.devnull,
             "HOME": str(git_dir),
             "LC_ALL": "C",
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PATH": host_path(),
             "GIT_AUTHOR_NAME": "honeminer", "GIT_AUTHOR_EMAIL": "honeminer@localhost",
             "GIT_COMMITTER_NAME": "honeminer", "GIT_COMMITTER_EMAIL": "honeminer@localhost",
         }

@@ -9,6 +9,7 @@ that the work log built from the recorded traffic is valid.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import platform
@@ -19,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from honeminer.clock import Clock
 from honeminer.config import Settings
 
 
@@ -104,7 +106,10 @@ SPIKE_PROMPT = (
 )
 
 
-def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
+SPIKE_BUDGET_S = 360  # the spike's task budget; the clock turns it into the agent's stop time
+
+
+def spike(settings: Settings) -> list[Check]:
     """One real Claude CLI run in the sandbox; returns what worked."""
 
     from rlvr.policy import RELEASE_POLICY
@@ -133,9 +138,9 @@ def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
         from honeminer.kit import KitTiming, write_kit
 
         facts = Facts("repository_patch_v1", "bug_fix", "text", ".", ".", None, None, None, (), (), ())
-        now = time.time()
+        clock = Clock.for_task(dataclasses.replace(settings, task_budget_s=SPIKE_BUDGET_S))
         write_kit(root / "kit-out", facts, "connectivity test",
-                  KitTiming(now, now + timeout_s, settings.time_notices, 60))
+                  KitTiming(time.time(), clock.agent_stop_wall(), settings.time_notices, 60))
         for item in (root / "kit-out").iterdir():
             shutil.move(str(item), root / "kit" / item.name)
         (root / "kit" / "prompt.txt").write_text(SPIKE_PROMPT)
@@ -152,7 +157,7 @@ def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
         sandbox = AgentSandbox(spec)
         try:
             sandbox.start()
-            result = ClaudeAgent(sandbox, settings, root / "stream.jsonl").run(timeout_s)
+            result = ClaudeAgent(sandbox, settings, root / "stream.jsonl").run(clock.agent_remaining())
         except (SandboxError, OSError) as exc:
             return [Check("spike", False, str(exc))]
         finally:

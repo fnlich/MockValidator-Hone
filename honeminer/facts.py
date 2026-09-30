@@ -1,7 +1,7 @@
 """Deterministic workspace scan: the facts the generated CLAUDE.md is built from.
 
 No model is involved. Every command found here is later run once in the
-grading image (``kit verify``); commands that cannot even start are dropped
+grading image (``solve.verify_facts``); commands that cannot even start are dropped
 before Claude sees them.
 """
 
