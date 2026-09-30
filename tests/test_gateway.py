@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from honeminer.gateway import Gateway, GatewayConfig, usage_from_body
+from honeminer.trajectory import read_traffic
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "honeminer" / "kit_templates"))
 import forwarder  # noqa: E402
@@ -47,9 +48,10 @@ def upstream():
     server.shutdown()
 
 
-def make_gateway(tmp_path, upstream, auth="api_key", gate=None):
+def make_gateway(tmp_path, upstream, auth="api_key", gate=None, traffic=None):
     config = GatewayConfig(socket_path=Path("/tmp") / f"hm-gw-{tmp_path.name[-12:]}.sock",
-                           model="claude-opus-5-5", auth=auth, credential="real-secret", upstream=upstream)
+                           model="claude-opus-5-5", auth=auth, credential="real-secret", upstream=upstream,
+                           traffic=traffic)
     gateway = Gateway(config, gate)
     gateway.start()
     return gateway
@@ -151,3 +153,48 @@ def test_usage_parsing_handles_json_and_garbage():
         "input_tokens": 5, "output_tokens": 7}
     assert usage_from_body(b"not json", False) == {}
     assert usage_from_body(b"data: {broken\n", True) == {}
+
+
+def test_recording_is_passive_and_complete(tmp_path, upstream):
+    responses = {}
+    for mode, traffic in (("off", None), ("on", tmp_path / "run" / "traffic.jsonl")):
+        gateway = make_gateway(tmp_path, upstream, traffic=traffic)
+        try:
+            with client(gateway) as http:
+                responses[mode] = [http.post("/v1/messages?beta=true", content=message(n=i)) for i in range(3)]
+                http.post("/v1/messages/count_tokens", content=message())
+                http.post("/_honeminer/gate", content=b"{}")
+        finally:
+            gateway.stop()
+    # Claude sees exactly the same bytes and statuses with recording on.
+    assert [(r.status_code, r.content) for r in responses["on"]] == [(r.status_code, r.content)
+                                                                    for r in responses["off"]]
+    exchanges = read_traffic(tmp_path / "run" / "traffic.jsonl")
+    assert [e.seq for e in exchanges] == [0, 1, 2] and all(e.path == "/v1/messages?beta=true" for e in exchanges)
+    assert [e.request for e in exchanges] == [message(n=i) for i in range(3)]
+    assert all(e.response == SSE and e.status == 200 and not e.transport_error for e in exchanges)
+    assert b"real-secret" not in (tmp_path / "run" / "traffic.jsonl").read_bytes()
+
+
+def test_an_unreachable_upstream_is_recorded_as_a_transport_error(tmp_path):
+    traffic = tmp_path / "traffic.jsonl"
+    gateway = make_gateway(tmp_path, "http://127.0.0.1:9", traffic=traffic)
+    try:
+        with client(gateway) as http:
+            assert http.post("/v1/messages", content=message()).status_code == 502
+    finally:
+        gateway.stop()
+    (exchange,) = read_traffic(traffic)
+    assert exchange.transport_error and exchange.response is None and exchange.status is None
+
+
+def test_a_recording_failure_never_reaches_claude(tmp_path, upstream):
+    (tmp_path / "blocker").write_text("a file where a directory should be")
+    gateway = make_gateway(tmp_path, upstream, traffic=tmp_path / "blocker" / "traffic.jsonl")
+    try:
+        with client(gateway) as http:
+            replies = [http.post("/v1/messages", content=message()) for _ in range(2)]
+        assert all(r.status_code == 200 and r.content == SSE for r in replies)
+    finally:
+        gateway.stop()
+    assert gateway.recorder.failed

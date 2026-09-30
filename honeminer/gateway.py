@@ -8,15 +8,19 @@ in-container forwarder relays 127.0.0.1:8080 to it) and:
 - enforces one model per solve and refuses server-side tools (web search/fetch),
   which would work even without container network;
 - counts tokens (from message usage) and rate-limit answers for the summary line;
-- serves ``/_honeminer/gate`` for the Stop hook.
-
-The work log (trajectory) is deferred, so bodies are not recorded.
+- serves ``/_honeminer/gate`` for the Stop hook;
+- records each model exchange (request and response bytes) to ``traffic.jsonl`` for the work log. Recording is
+  passive: a record is queued only after the response has fully reached Claude, and a background thread writes
+  it, so Claude never waits on it and a write failure never touches the run.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
+import logging
 import os
+import queue
 import socket
 import socketserver
 import threading
@@ -57,9 +61,56 @@ class GatewayConfig:
     auth: str  # "api_key" | "oauth"
     credential: str
     upstream: str = "https://api.anthropic.com"
+    traffic: Path | None = None  # where model exchanges are recorded for the work log; None = not recorded
 
 
 GateHandler = Callable[[dict], dict]
+log = logging.getLogger(__name__)
+
+
+def is_model_call(path: str) -> bool:
+    return path.startswith("/v1/messages") and not path.startswith("/v1/messages/count_tokens")
+
+
+class TrafficRecorder:
+    """Appends exchanges to a JSONL file from its own thread; ``put`` never blocks and never raises."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.failed = False
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._thread = threading.Thread(target=self._write, daemon=True, name="honeminer-traffic")
+        self._thread.start()
+
+    def put(self, seq: int, path: str, status: int | None, request: bytes, response: bytes | None,
+            transport_error: bool) -> None:
+        self._queue.put((seq, path, status, request, response, transport_error))
+
+    def _write(self) -> None:
+        from honeminer.trajectory import record_line
+
+        handle = None
+        while True:
+            item = self._queue.get()
+            if item is None:
+                break
+            if self.failed:
+                continue
+            try:
+                if handle is None:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    handle = self.path.open("a", encoding="utf-8")
+                handle.write(record_line(*item))
+                handle.flush()
+            except Exception as exc:  # noqa: BLE001 - the work log must never affect the run
+                self.failed = True
+                log.warning("traffic recording stopped: %s", exc)
+        if handle is not None:
+            handle.close()
+
+    def close(self, timeout_s: float = 30) -> None:
+        self._queue.put(None)
+        self._thread.join(timeout_s)
 
 
 def usage_from_body(body: bytes, streamed: bool) -> dict:
@@ -100,6 +151,8 @@ class Gateway:
         self._lock = threading.Lock()
         self._client = httpx.Client(timeout=httpx.Timeout(connect=30, read=900, write=60, pool=30))
         self._server: _UnixServer | None = None
+        self._seq = itertools.count()
+        self.recorder = TrafficRecorder(config.traffic) if config.traffic is not None else None
 
     def reject(self, reason: str) -> None:
         with self._lock:
@@ -178,8 +231,12 @@ class Gateway:
                     return
                 headers = gateway.upstream_headers(dict(self.headers.items()))
                 url = gateway.config.upstream.rstrip("/") + self.path
+                record = gateway.recorder is not None and is_model_call(self.path)
+                seq = next(gateway._seq) if record else 0
+                status, captured, failed = None, None, True
                 try:
                     with gateway._client.stream(self.command, url, headers=headers, content=body) as response:
+                        status = response.status_code
                         self.send_response(response.status_code)
                         for key, value in response.headers.items():
                             if key.lower() not in HOP_BY_HOP and key.lower() != "content-encoding":
@@ -194,6 +251,7 @@ class Gateway:
                             self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
                             self.wfile.flush()
                         self.wfile.write(b"0\r\n\r\n")
+                        failed = False
                         streamed = "text/event-stream" in response.headers.get("content-type", "")
                         with gateway._lock:
                             gateway.usage.requests += 1
@@ -204,6 +262,10 @@ class Gateway:
                 except httpx.HTTPError as exc:
                     self._json(502, {"type": "error", "error": {"type": "api_error",
                                                                  "message": f"honeminer gateway: {exc}"}})
+                finally:
+                    if record:  # after Claude has the whole response; a cut-off stream is a transport error
+                        gateway.recorder.put(seq, self.path, None if failed else status, body,
+                                             None if failed or captured is None else bytes(captured), failed)
 
             do_POST = _proxy
             do_GET = _proxy
@@ -228,6 +290,8 @@ class Gateway:
             self._server = None
         self._client.close()
         self.config.socket_path.unlink(missing_ok=True)
+        if self.recorder is not None:
+            self.recorder.close()
 
 
 def connect_unix(path: Path) -> socket.socket:
