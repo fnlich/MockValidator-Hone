@@ -104,6 +104,7 @@ class RehearsalServer:
         self.lease: LeaseResponse | None = None
         self.uploads: dict[str, Upload] = {}
         self.verdicts: dict[int, Verdict] = {}
+        self.submissions: dict[int, MinerSubmission] = {}  # the envelopes the validator committed
         self.feedback: list[dict] = []
         self.log: list[str] = []
 
@@ -211,6 +212,7 @@ class RehearsalServer:
         request = ChallengeCommitRequest.model_validate_json(body)
         grants, failures = [], []
         for submission in request.submissions:
+            self.submissions[submission.uid] = submission
             verdict = self._check(submission)
             self.verdicts[submission.uid] = verdict
             if not verdict.granted:
@@ -378,7 +380,9 @@ class Rehearsal:
         return {"challenge_id": self.server.challenge_id, "task_id": self.server.pack.task_id,
                 "pack": self.server.pack.name, "round": {"status": self.result.status, "reason": self.result.reason},
                 "miners": self.rows, "server_log": self.server.log,
-                "note": "in-process replies are unsigned; Epistula signing is rehearsed with serve"}
+                "note": "honeminer over HTTP: replies are Epistula-signed and verified by rlvr's LiveSolverClient"
+                if any(r.get("signed") for r in self.rows) else
+                "in-process replies are unsigned; use --http to rehearse the signed serve endpoint"}
 
     def render(self) -> str:
         lines = [f"round {self.result.status}" + (f": {self.result.reason}" if self.result.reason else "")]
@@ -397,9 +401,59 @@ def rehearsal_policy(policy):
     return dataclasses.replace(policy, artifact_origins=ORIGINS, dispatch_concurrency=len(MINERS))
 
 
-async def rehearse(pack: TaskPack, *, answer: AnswerFn, policy, workdir: Path, lease_s: int,
-                   trajectory_max_bytes: int, put_faults: int = 0,
-                   stand_in_logs: dict[str, LogFn] | None = None) -> Rehearsal:
+MINER_URL = "http://honeminer.rehearsal"  # where `rehearse --http` reaches the serve app (in process, over ASGI)
+
+
+class _Router(httpx.AsyncBaseTransport):
+    """One client for the whole rehearsal: the miner's host goes to the serve app, everything else to the server."""
+
+    def __init__(self, default: httpx.AsyncBaseTransport, routes: dict[str, httpx.AsyncBaseTransport]) -> None:
+        self.default, self.routes = default, routes
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self.routes.get(request.url.host, self.default).handle_async_request(request)
+
+
+def identities() -> tuple[object, str, object, str]:
+    """(miner wallet, miner hotkey, validator wallet, validator hotkey) for signed rehearsals.
+
+    Real sr25519 keypairs when a chain stack is installed (rlvr then rejects HMAC ids); otherwise rlvr's HMAC
+    fallback with plain string ids, as rlvr's own tests do.
+    """
+
+    from rlvr import protocol
+
+    if protocol._HAVE_CRYPTO:
+        miner, validator = protocol._Keypair.create_from_uri("//Alice"), protocol._Keypair.create_from_uri("//Bob")
+        return miner, miner.ss58_address, validator, validator.ss58_address
+    return hotkey_for(HONEMINER), hotkey_for(HONEMINER), "rehearsal-validator", "rehearsal-validator"
+
+
+@dataclass
+class HttpHoneminer:
+    """honeminer reached the way a validator reaches it: rlvr's LiveSolverClient over HTTP, signed both ways."""
+
+    uid: int
+    hotkey: str
+    client: object  # rlvr LiveSolverClient
+    task: MinerTaskRequest | None = None
+    reply: object | None = None
+    error: str = ""
+
+    async def solve_v3(self, task: MinerTaskRequest) -> tuple[MinerSubmission, MinerTaskResponse | None]:
+        self.task = task
+        submission, parsed = await self.client.solve_v3(task)
+        if parsed is None:
+            self.error = submission.error
+        self.reply = parsed
+        return submission, parsed
+
+
+async def rehearse(pack: TaskPack, *, settings, solve_fn, policy, workdir: Path, lease_s: int,
+                   trajectory_max_bytes: int, put_faults: int = 0, stand_in_logs: dict[str, LogFn] | None = None,
+                   over_http: bool = False) -> Rehearsal:
+    """One round. ``over_http``: honeminer is the real ``serve`` app, called through rlvr's LiveSolverClient."""
+
     from rlvr.v3.client import V3ProblemServerClient
     from rlvr.v3.round import compute_round_payments, evaluate_round
 
@@ -408,15 +462,39 @@ async def rehearse(pack: TaskPack, *, answer: AnswerFn, policy, workdir: Path, l
     answers = {REFERENCE: reference, COPYCAT: reference, EMPTY: b"", BROKEN: BROKEN_ANSWER}
     logs = stand_in_logs or {}
     workdir = Path(workdir)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(server.handle)) as http:
-        ours = Honeminer(MINERS[0][0], hotkey_for(HONEMINER), http, answer)
+    miner_wallet, our_hotkey, validator_wallet, validator_hotkey = (
+        identities() if over_http else (None, hotkey_for(HONEMINER), "rehearsal-validator", "rehearsal-validator"))
+    mock = httpx.MockTransport(server.handle)
+    offer_server = None
+    if over_http:
+        from types import SimpleNamespace
+
+        from honeminer.server import OfferServer, build_app
+
+        offer_server = OfferServer(settings, wallet=miner_wallet, http=None, solve_fn=solve_fn, origins=ORIGINS,
+                                   metagraph=SimpleNamespace(hotkeys=[validator_hotkey], S=[1.0],
+                                                             validator_permit=[True]))
+        transport = _Router(mock, {httpx.URL(MINER_URL).host: httpx.ASGITransport(app=build_app(offer_server))})
+    else:
+        transport = mock
+    async with httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(None)) as http:
+        if over_http:
+            from rlvr.config import Settings as ValidatorSettings
+            from rlvr.neurons.live import LiveSolverClient
+
+            offer_server.http = http
+            ours = HttpHoneminer(MINERS[0][0], our_hotkey, LiveSolverClient(
+                MINERS[0][0], our_hotkey, MINER_URL, validator_wallet, ValidatorSettings(_env_file=None), http))
+        else:
+            ours = Honeminer(MINERS[0][0], our_hotkey, http, answer_with(settings, solve_fn, workdir / "miner"))
         solvers = [ours] + [StandIn(uid, hotkey_for(name), answers[name], http, logs.get(name, honest_log),
                                     COPYCAT_DELAY_S if name == COPYCAT else 0.0)
                             for uid, name in MINERS if name in answers]
-        client = V3ProblemServerClient(ORIGIN, "rehearsal-validator", http, retries=1)
+        client = V3ProblemServerClient(ORIGIN, validator_wallet, http, retries=1)
         result = await evaluate_round(client, http, solvers, rehearsal_policy(policy),
                                       cache_dir=workdir / "cache", work_dir=workdir / "grading",
-                                      candidates=[(uid, hotkey_for(name)) for uid, name in MINERS])
+                                      candidates=[(uid, our_hotkey if name == HONEMINER else hotkey_for(name))
+                                                  for uid, name in MINERS])
     payments = compute_round_payments(result, speed_half_life_ms=RELEASE_POLICY.payment_speed_half_life_ms,
                                       speed_floor=RELEASE_POLICY.payment_speed_floor)
     rehearsal = Rehearsal(server, result, payments, ours)
@@ -435,12 +513,14 @@ async def rehearse(pack: TaskPack, *, answer: AnswerFn, policy, workdir: Path, l
             "grade": evaluation.result.status if evaluation else "-",
             "latency_ms": evaluation.latency_ms if evaluation else 0,
             "payment": payments.get(uid, 0.0), "detail": detail,
+            "signed": name == HONEMINER and over_http and verdict is not None and not verdict.detail.startswith(
+                "no reply"),
         })
     return rehearsal
 
 
 def run_rehearsal(pack: TaskPack, settings, *, agent: str, lease_s: int | None = None,
-                  trajectory_max_bytes: int | None = None) -> tuple[Rehearsal, Path]:
+                  trajectory_max_bytes: int | None = None, over_http: bool = False) -> tuple[Rehearsal, Path]:
     """The ``rehearse`` command: real grading (Docker), and Claude or the reference answer as honeminer's solver."""
 
     from honeminer.archive import RunArchive
@@ -458,7 +538,7 @@ def run_rehearsal(pack: TaskPack, settings, *, agent: str, lease_s: int | None =
     else:
         solve_fn = reference_solve(pack.reference(), settings)
     rehearsal = asyncio.run(rehearse(
-        pack, answer=answer_with(settings, solve_fn, archive.root / "miner"), policy=policy,
+        pack, settings=settings, solve_fn=solve_fn, policy=policy, over_http=over_http,
         workdir=archive.root / "round", lease_s=lease_s or settings.rehearsal_lease_s,
         trajectory_max_bytes=trajectory_max_bytes or settings.rehearsal_trajectory_max_bytes,
     ))

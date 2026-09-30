@@ -92,10 +92,9 @@ def scripted_solve(tmp_path, steps, settings):
 def run(pack, tmp_path, *, steps=(half_fix, full_fix, lambda d: None), env=None, solve_fn=None, **kwargs):
     settings = load_env(None, environ={"HONEMINER_RUNS_DIR": str(tmp_path / "runs"), **(env or {})})
     solve_fn = solve_fn or scripted_solve(tmp_path, list(steps), settings)
-    answer = rh.answer_with(settings, solve_fn, tmp_path / "miner")
     kwargs.setdefault("lease_s", 1500)
     kwargs.setdefault("trajectory_max_bytes", 64 * 1024**2)
-    return asyncio.run(rh.rehearse(pack, answer=answer, policy=round_policy_for_tests(tmp_path),
+    return asyncio.run(rh.rehearse(pack, settings=settings, solve_fn=solve_fn, policy=round_policy_for_tests(tmp_path),
                                    workdir=tmp_path / "round", **kwargs))
 
 
@@ -187,3 +186,33 @@ def test_when_no_miner_can_fit_its_log_the_round_is_abandoned_for_quorum(stats_p
     rehearsal = run(stats_pack, tmp_path, trajectory_max_bytes=600)
     assert rehearsal.result.status == "abandoned" and "quorum" in rehearsal.result.reason
     assert rehearsal.exit_code == 2
+
+
+@pytest.fixture
+def hmac_signing(monkeypatch):
+    from rlvr import protocol
+
+    monkeypatch.setattr(protocol, "_HAVE_CRYPTO", False)
+
+
+def test_over_http_the_serve_app_is_called_and_its_signed_reply_is_accepted(stats_pack, tmp_path, fake_grading,
+                                                                             hmac_signing):
+    from rlvr.protocol import verify_signature
+
+    rehearsal = run(stats_pack, tmp_path, over_http=True)
+    ours = row(rehearsal, rh.HONEMINER)
+    assert (ours["reply"], ours["commit"], ours["grade"], ours["signed"]) == ("sent", "grant", "passed", True)
+    assert ours["payment"] > 0 and rehearsal.exit_code == 0
+    envelope = rehearsal.server.submissions[ours["uid"]]
+    assert envelope.response_headers["Epistula-Signed-By"] == rh.hotkey_for(rh.HONEMINER)
+    assert verify_signature(envelope.response_headers, envelope.response_body.encode(),
+                            expected_signed_for="rehearsal-validator", allowed_delta_ms=10**9)
+    assert (tmp_path / "runs" / "offers.jsonl").is_file() and "signed" in rehearsal.to_json()["note"]
+
+
+def test_over_http_a_refused_offer_is_a_failed_reply_and_the_round_goes_on(stats_pack, tmp_path, fake_grading,
+                                                                           hmac_signing):
+    rehearsal = run(stats_pack, tmp_path, over_http=True, env={"HONEMINER_TRAJECTORY_MAX_BYTES": "600"})
+    ours = row(rehearsal, rh.HONEMINER)
+    assert rehearsal.result.status == "completed" and ours["reply"] == "none" and ours["payment"] == 0.0
+    assert "422" in rehearsal.honeminer.error and rehearsal.exit_code == 1

@@ -127,7 +127,7 @@ def _rehearse(args: argparse.Namespace) -> int:
     settings = load_env(args.env_file)
     try:
         rehearsal, root = run_rehearsal(load_pack(args.pack), settings, agent=args.agent, lease_s=args.lease_s,
-                                        trajectory_max_bytes=args.trajectory_max_bytes)
+                                        trajectory_max_bytes=args.trajectory_max_bytes, over_http=args.http)
     except GradeEnvironmentError as exc:
         print(f"cannot grade here: {exc}", file=sys.stderr)
         return 2
@@ -193,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
     rehearse.add_argument("--lease-s", type=int, default=None, help="lease length (HONEMINER_REHEARSAL_LEASE_S)")
     rehearse.add_argument("--trajectory-max-bytes", type=int, default=None,
                           help="trajectory slot size (HONEMINER_REHEARSAL_TRAJECTORY_MAX_BYTES)")
+    rehearse.add_argument("--http", action="store_true",
+                          help="reach honeminer through the real serve app and rlvr's LiveSolverClient (signed)")
     rehearse.set_defaults(handler=_rehearse)
     serve = commands.add_parser("serve", help="answer live offers from validators (HONEMINER_MODE=testnet|mainnet)")
     serve.set_defaults(handler=_serve)
