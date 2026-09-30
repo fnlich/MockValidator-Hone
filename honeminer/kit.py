@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from honeminer.facts import Facts
+from honeminer.selfcheck import CHECK_TIMEOUT_S
 
 PROMPT_VERSION = "v3"
 TEMPLATES = Path(__file__).resolve().parent / "kit_templates"
@@ -72,7 +73,7 @@ def render_claude_md(facts: Facts, timing: KitTiming) -> str:
         lines.append(f"- Tests: `{facts.test_cmd}`")
     if facts.driver_recipe:
         lines.append(f"- Driver: `{facts.driver_recipe}`")
-    lines.append(f"- Your checks: `python3 {KIT_MOUNT}/run_checks.py`")
+    lines.append(f"- Your checks: `python3 {KIT_MOUNT}/run_checks.py` (each runs with cwd {_check_cwd(facts)})")
     if not facts.is_terminal:
         lines.append(f"- Your diff: `python3 {KIT_MOUNT}/mydiff.py` (no git history in /work)")
     lines += [
@@ -170,9 +171,21 @@ def write_kit(destination: Path, facts: Facts, instruction: str, timing: KitTimi
         "gate_timeout_s": timing.gate_timeout_s,
         "protected": list(facts.protected),
         "protected_globs": list(PROTECTED_GLOBS),
+        # run_checks.py runs checks exactly where the gate does.
+        "checks_dir": "/task/checks",
+        "check_cwd": _check_cwd(facts),
+        "check_timeout_s": CHECK_TIMEOUT_S,
     }
     (destination / "kit.json").write_text(json.dumps(kit, indent=2) + "\n")
     return destination
+
+
+def _check_cwd(facts: Facts) -> str:
+    """Where the gate runs checks: the project directory for repositories, /work for terminal tasks."""
+
+    if facts.is_terminal or facts.working_directory in ("", "."):
+        return "/work"
+    return f"/work/{facts.working_directory}"
 
 
 def lint(claude_md: str, prompt: str, instruction: str) -> list[str]:

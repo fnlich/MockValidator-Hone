@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from honeminer.kit import KitTiming, lint, render_claude_md, render_prompt, rend
 from honeminer.pack import RECIPES_DIR, load_recipe
 from honeminer.tasks import load_pack
 
+KIT_TEMPLATES = Path(__file__).resolve().parent.parent / "honeminer" / "kit_templates"
 TIMING = KitTiming(start_epoch=1000.0, agent_stop_epoch=1000.0 + 1060, time_notices=(0.5, 0.25, 0.1),
                    gate_timeout_s=300)
 
@@ -175,3 +177,38 @@ def test_run_checks_and_mydiff_are_valid_python(kit_dir):
         compile((kit_dir / name).read_text(), name, "exec")
     with tempfile.TemporaryDirectory():
         pass
+
+
+def test_driver_commands_point_into_the_working_directory(tmp_path):
+    repo = tmp_path / "repo"
+    shutil.copytree(RECIPES_DIR / "c-ringbuf" / "repo", repo / "sub")
+    facts = scan(repo, task_type="repository_patch_v1", instruction="fix it", language="c", working_directory="sub")
+    assert "/work/sub/ringbuf.c" in facts.driver_recipe and "-I/work/sub" in facts.driver_recipe
+    top = scan(repo / "sub", task_type="repository_patch_v1", instruction="fix it", language="c")
+    assert "/work/ringbuf.c" in top.driver_recipe
+
+
+def test_run_checks_uses_the_gates_cwd_and_survives_a_hanging_check(tmp_path):
+    kit, checks, project = tmp_path / "kit", tmp_path / "checks", tmp_path / "work" / "sub"
+    for directory in (kit, checks, project):
+        directory.mkdir(parents=True)
+    shutil.copy(KIT_TEMPLATES / "run_checks.py", kit / "run_checks.py")
+    (kit / "kit.json").write_text(json.dumps({"checks_dir": str(checks), "check_cwd": str(project),
+                                              "check_timeout_s": 1}))
+    (project / "marker").write_text("here")
+    (checks / "01-cwd.sh").write_text("test -f marker\n")
+    (checks / "02-hang.sh").write_text("sleep 30\n")
+    ran = subprocess.run([sys.executable, str(kit / "run_checks.py")], capture_output=True, text=True, timeout=20)
+    assert "PASS  01-cwd.sh" in ran.stdout and "TIMEOUT  02-hang.sh" in ran.stdout
+    assert ran.returncode == 1 and "Traceback" not in ran.stderr
+
+
+def test_kit_json_tells_run_checks_where_the_gate_runs(tmp_path):
+    facts = scan(RECIPES_DIR / "c-ringbuf" / "repo", task_type="repository_patch_v1", instruction="x", language="c")
+    import dataclasses
+
+    facts = dataclasses.replace(facts, working_directory="sub")
+    now = time.time()
+    write_kit(tmp_path / "kit", facts, "x", KitTiming(now, now + 600, (0.5,), 60))
+    kit = json.loads((tmp_path / "kit" / "kit.json").read_text())
+    assert kit["check_cwd"] == "/work/sub" and kit["checks_dir"] == "/task/checks" and kit["check_timeout_s"] == 300

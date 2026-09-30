@@ -113,22 +113,22 @@ def _crate_name(root: Path) -> str:
     return (match.group(1) if match else "crate").replace("-", "_")
 
 
-def _c_driver(language: str, inputs: str) -> str:
+def _c_driver(language: str, inputs: str, base: str = "/work") -> str:
     compiler, ext = ("g++ -std=c++17", "cpp") if language == "cpp" else ("gcc -std=c11", "c")
-    return f"{compiler} -I/work /tmp/d.{ext} {inputs} -o /tmp/d".replace("  ", " ")
+    return f"{compiler} -I{base} /tmp/d.{ext} {inputs} -o /tmp/d".replace("  ", " ")
 
 
-def _rust_driver(crate: str) -> str:
+def _rust_driver(crate: str, base: str = "/work") -> str:
     lib = f"/tmp/lib{crate}.rlib"
     return (
-        f"rustc --edition 2021 --crate-type rlib --crate-name {crate} /work/src/lib.rs -o {lib}"
+        f"rustc --edition 2021 --crate-type rlib --crate-name {crate} {base}/src/lib.rs -o {lib}"
         f" && rustc --edition 2021 /tmp/d.rs --extern {crate}={lib} -o /tmp/d"
     )
 
 
-def _go_driver(module: str) -> str:
+def _go_driver(module: str, base: str = "/work") -> str:
     return (
-        "cp -r /work /tmp/w && mkdir -p /tmp/w/cmd/chk"
+        f"cp -r {base} /tmp/w && mkdir -p /tmp/w/cmd/chk"
         f" && (write /tmp/w/cmd/chk/main.go importing {module}) && cd /tmp/w && go run ./cmd/chk"
     )
 
@@ -143,41 +143,44 @@ def _node_main(root: Path) -> str:
 BuildInfo = tuple[str | None, str | None, list[str]]
 
 
-def _build_and_driver(root: Path, files: list[str], language: str) -> BuildInfo:
+def _build_and_driver(root: Path, files: list[str], language: str, base: str = "/work") -> BuildInfo:
+    """Build command (run in the project directory) and a driver recipe whose paths live under ``base``,
+    the project directory inside the container (``/work`` or ``/work/<working_directory>``)."""
+
     gotchas: list[str] = []
     if (root / ".rlvr" / "build.py").is_file():
         libraries = sorted(n for n in files if n.startswith(".prebuilt/") and n.endswith(".a"))
-        include = "-I/work/include" if (root / "include").is_dir() else ""
-        driver = _c_driver(language, f"{include} /work/{libraries[0]}") if libraries else None
+        include = f"-I{base}/include" if (root / "include").is_dir() else ""
+        driver = _c_driver(language, f"{include} {base}/{libraries[0]}", base) if libraries else None
         gotchas.append("The build rewrites tracked files under .prebuilt/. That is expected; "
                        "those changes are removed from your diff automatically.")
         return "python3 .rlvr/build.py", driver, gotchas
     if (root / "CMakeLists.txt").is_file():
         gotchas.append("CMakeLists.txt exists but cmake is not installed.")
     if (root / "Cargo.toml").is_file():
-        driver = _rust_driver(_crate_name(root)) if (root / "src" / "lib.rs").is_file() else None
+        driver = _rust_driver(_crate_name(root), base) if (root / "src" / "lib.rs").is_file() else None
         return "cargo build --offline", driver, gotchas
     if (root / "go.mod").is_file():
         module = re.search(r"^module\s+(\S+)", (root / "go.mod").read_text(), flags=re.M)
-        return "go build ./...", _go_driver(module.group(1) if module else "the module"), gotchas
+        return "go build ./...", _go_driver(module.group(1) if module else "the module", base), gotchas
     if (root / "package.json").is_file() or language in ("javascript", "typescript"):
         build = "npm run build" if "build" in _package_scripts(root) else None
         if build is None and (root / "tsconfig.json").is_file():
             build = "tsc --noEmit -p ."
-        return build, f"node -e \"const m = require('/work/{_node_main(root)}'); ...\"", gotchas
+        return build, f"node -e \"const m = require('{base}/{_node_main(root)}'); ...\"", gotchas
     if language in ("c", "cpp"):
         sources = " ".join(
-            f"/work/{n}" for n in files
+            f"{base}/{n}" for n in files
             if n.endswith((".c", ".cpp", ".cc")) and not re.search(r"(^|/)main\.(c|cpp|cc)$", n)
         )
-        return ("make" if _makefile_targets(root) else None), _c_driver(language, sources), gotchas
+        return ("make" if _makefile_targets(root) else None), _c_driver(language, sources, base), gotchas
     if language == "java":
-        compile_all = "javac -d /tmp/classes $(find /work -name '*.java')"
+        compile_all = f"javac -d /tmp/classes $(find {base} -name '*.java')"
         return compile_all, f"{compile_all} /tmp/Check.java && java -cp /tmp/classes Check", gotchas
     if language == "python":
         build = ("python3 -c \"import ast, pathlib; [ast.parse(p.read_bytes(), str(p)) "
                  "for p in pathlib.Path('.').rglob('*.py')]\"")
-        return build, "python3 -c \"import sys; sys.path.insert(0, '/work'); import <module>; ...\"", gotchas
+        return build, f"python3 -c \"import sys; sys.path.insert(0, '{base}'); import <module>; ...\"", gotchas
     return None, None, gotchas
 
 
@@ -262,7 +265,8 @@ def scan(
             protected=(), doc_files=_doc_files(root, files, instruction), gotchas=(), languages=languages,
         )
     project = root / working_directory if working_directory not in ("", ".") else root
-    build, driver, gotchas = _build_and_driver(project, _files(project), primary)
+    base = "/work" if working_directory in ("", ".") else f"/work/{working_directory}"
+    build, driver, gotchas = _build_and_driver(project, _files(project), primary, base)
     return Facts(
         task_type=task_type, task_kind=task_kind, language=primary, working_directory=working_directory,
         result_tree_path=".", build_cmd=build, test_cmd=_test_command(project, _files(project)),
