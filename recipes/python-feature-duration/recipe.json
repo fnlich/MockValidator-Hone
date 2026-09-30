@@ -1,0 +1,13 @@
+{
+  "task_kind": "feature",
+  "language": "python",
+  "instruction": "Please add parse_duration to durations.py as specified in the README.",
+  "checks": [
+    {
+      "id": "01-parse-valid"
+    },
+    {
+      "id": "02-parse-invalid"
+    }
+  ]
+}

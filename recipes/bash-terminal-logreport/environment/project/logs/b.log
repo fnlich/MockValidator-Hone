@@ -1,0 +1,5 @@
+2026-03-01T09:00:00 INFO worker ready
+2026-03-01T09:10:00 ERROR queue full: 1000 items
+2026-03-01T09:11:00 WARN retrying job 7
+2026-03-01T09:12:00 INFO job 7 done
+2026-03-01T09:13:00 INFO heartbeat

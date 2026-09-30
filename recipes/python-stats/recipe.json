@@ -1,0 +1,13 @@
+{
+  "task_kind": "bug_fix",
+  "language": "python",
+  "instruction": "The dashboard's median and percentile numbers don't match what our analysts get in NumPy. Please fix stats.py so it matches its documented definitions.",
+  "checks": [
+    {
+      "id": "01-median"
+    },
+    {
+      "id": "02-percentile"
+    }
+  ]
+}

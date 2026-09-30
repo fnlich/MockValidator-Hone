@@ -1,0 +1,14 @@
+{
+  "task_type": "terminal_script_v1",
+  "language": "bash",
+  "instruction": "In this directory, write a report from the files in logs/ (only files ending in .log). A log line looks like `<timestamp> <LEVEL> <message>`; ignore lines that do not match. Create report/summary.txt with one line per level, `<LEVEL> <count>`, sorted by count descending and then by level name ascending. Create report/errors.txt with the message of every ERROR line, in order of file name and then line order. Both files end with a newline. Do not modify logs/.",
+  "result_tree_path": "project",
+  "checks": [
+    {
+      "id": "01-summary"
+    },
+    {
+      "id": "02-errors"
+    }
+  ]
+}

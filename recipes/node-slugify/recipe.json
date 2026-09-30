@@ -1,0 +1,13 @@
+{
+  "task_kind": "bug_fix",
+  "language": "javascript",
+  "instruction": "Some generated URL slugs have double dashes or end with a dash. Please fix slugify so it follows the rules in its doc comment.",
+  "checks": [
+    {
+      "id": "01-collapse"
+    },
+    {
+      "id": "02-max-length"
+    }
+  ]
+}

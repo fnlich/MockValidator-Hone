@@ -1,0 +1,34 @@
+diff --git a/textutil.go b/textutil.go
+index ba24acf9eed0319172998d0a40b6a45c99652ca6..113135d60dfc3027f11762ea67471e073e2c17e7 100644
+--- a/textutil.go
++++ b/textutil.go
+@@ -20,29 +20,3 @@ func Truncate(s string, n int) string {
+ func Words(s string) []string {
+ 	return strings.Fields(s)
+ }
+-
+-// Wrap breaks s into lines of at most width runes, splitting only at
+-// whitespace. Words are separated by single spaces in the output. A word
+-// longer than width is put on a line of its own, unbroken. Empty or
+-// whitespace-only input returns an empty (non-nil) slice. width <= 0 returns
+-// all words joined by single spaces as one line.
+-func Wrap(s string, width int) []string {
+-	words := strings.Fields(s)
+-	lines := []string{}
+-	if len(words) == 0 {
+-		return lines
+-	}
+-	if width <= 0 {
+-		return []string{strings.Join(words, " ")}
+-	}
+-	current := words[0]
+-	for _, w := range words[1:] {
+-		if len([]rune(current))+1+len([]rune(w)) <= width {
+-			current += " " + w
+-			continue
+-		}
+-		lines = append(lines, current)
+-		current = w
+-	}
+-	return append(lines, current)
+-}

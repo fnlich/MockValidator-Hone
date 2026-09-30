@@ -1,0 +1,13 @@
+{
+  "task_kind": "bug_fix",
+  "language": "rust",
+  "instruction": "Some encoded strings don't decode back to the original text, and long runs look wrong. Could you fix the rle crate so it follows the format described in its documentation?",
+  "checks": [
+    {
+      "id": "01-encode-runs"
+    },
+    {
+      "id": "02-decode-roundtrip"
+    }
+  ]
+}

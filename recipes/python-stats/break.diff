@@ -1,0 +1,23 @@
+diff --git a/stats.py b/stats.py
+index 46057aacabf8a8537ef8285c1aa37cbdb3961c38..e2f8d5a07e991a9b62d05825859313c004415388 100644
+--- a/stats.py
++++ b/stats.py
+@@ -24,7 +24,7 @@ def median(values):
+     mid = n // 2
+     if n % 2:
+         return data[mid]
+-    return (data[mid - 1] + data[mid]) / 2
++    return data[mid]
+ 
+ 
+ def percentile(values, p):
+@@ -33,7 +33,8 @@ def percentile(values, p):
+     data = sorted(values)
+     if not data:
+         raise ValueError("percentile of empty data")
+-    rank = p / 100 * (len(data) - 1)
++    rank = p / 100 * len(data)
++    rank = min(rank, len(data) - 1)
+     low = math.floor(rank)
+     high = min(low + 1, len(data) - 1)
+     return data[low] + (rank - low) * (data[high] - data[low])

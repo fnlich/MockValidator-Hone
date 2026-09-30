@@ -1,0 +1,14 @@
+{
+  "task_kind": "bug_fix",
+  "language": "java",
+  "instruction": "Our calendar shows overlapping busy blocks that should have been merged. Please fix Intervals.merge so it does what its Javadoc says.",
+  "working_directory": ".",
+  "checks": [
+    {
+      "id": "01-touching"
+    },
+    {
+      "id": "02-unsorted-input"
+    }
+  ]
+}
