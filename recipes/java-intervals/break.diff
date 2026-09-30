@@ -1,0 +1,17 @@
+diff --git a/src/intervals/Intervals.java b/src/intervals/Intervals.java
+index 4ae2fd6e3954eb04dcb7c8c148224b852664e5f2..ae3f7801a47f1b30f7ceff40efb8cada95632652 100644
+--- a/src/intervals/Intervals.java
++++ b/src/intervals/Intervals.java
+@@ -21,10 +21,10 @@ public final class Intervals {
+         for (int[] iv : input) {
+             sorted.add(new int[] {iv[0], iv[1]});
+         }
+-        sorted.sort(Comparator.comparingInt((int[] iv) -> iv[0]).thenComparingInt(iv -> iv[1]));
++
+         List<int[]> out = new ArrayList<>();
+         for (int[] iv : sorted) {
+-            if (!out.isEmpty() && iv[0] <= out.get(out.size() - 1)[1]) {
++            if (!out.isEmpty() && iv[0] < out.get(out.size() - 1)[1]) {
+                 int[] last = out.get(out.size() - 1);
+                 last[1] = Math.max(last[1], iv[1]);
+             } else {

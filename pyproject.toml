@@ -3,21 +3,44 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hone-miner-harness"
+name = "honeminer"
 version = "0.1.0"
-description = "Local mock validator for testing Hone Subnet (SN5) miners"
+description = "Automatic Claude CLI miner harness for Hone (Bittensor SN5) V4 tasks"
 requires-python = ">=3.10,<3.13"
-# rlvr (the subnet package) is an explicit, unpinned prerequisite: the harness
-# grades with the validator's real sandbox and signs with its real crypto, so it
-# must run against whatever revision you are targeting. Install it yourself:
-#   pip install -e './hone-subnet[chain,miner]'
+# rlvr (the subnet package) is a prerequisite pinned by commit, not by version:
+#   git -C ../hone-subnet checkout d5786a9 && pip install -e '../hone-subnet[miner]'
+# The harness grades and validates with the validator's own code, so it must
+# match the release it targets.
 dependencies = ["httpx>=0.27,<1"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
 
-[tool.setuptools]
-py-modules = ["mock_validator", "run_local_miner"]
+[project.scripts]
+honeminer = "honeminer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["honeminer*"]
+
+[tool.setuptools.package-data]
+honeminer = ["kit_templates/*", "kit_templates/hooks/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "docker: needs a Docker daemon and the sandbox image",
+    "live: needs a Claude login or network access",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Rendered prompt text reads better unwrapped.
+"honeminer/kit.py" = ["E501"]
+"tests/test_kit.py" = ["E501"]
+"tests/test_gateway.py" = ["E501"]

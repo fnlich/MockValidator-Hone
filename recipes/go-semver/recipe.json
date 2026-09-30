@@ -1,0 +1,13 @@
+{
+  "task_kind": "bug_fix",
+  "language": "go",
+  "instruction": "Our release tooling sometimes picks the wrong \"latest\" version, especially around pre-releases. Please make semver.Compare follow the precedence rules in its package documentation.",
+  "checks": [
+    {
+      "id": "01-prerelease-precedence"
+    },
+    {
+      "id": "02-numeric-identifiers"
+    }
+  ]
+}

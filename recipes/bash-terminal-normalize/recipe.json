@@ -1,0 +1,14 @@
+{
+  "task_type": "terminal_script_v1",
+  "language": "bash",
+  "instruction": "Rename every regular file directly inside inbox/ so its name is normalized: lowercase, each run of characters other than a-z, 0-9 and '.' replaced by a single '-', and no leading or trailing '-' in the part before the extension (the extension is the text after the last '.', lowercased; files without a '.' have no extension). If two files would get the same name, process the original names in byte order; the first keeps the name and later ones get -2, -3, ... before the extension. File contents must not change. Then write inbox/INDEX with one line per file, `<new name> <old name>`, sorted by new name, ending with a newline.",
+  "result_tree_path": ".",
+  "checks": [
+    {
+      "id": "01-renamed-files"
+    },
+    {
+      "id": "02-index"
+    }
+  ]
+}

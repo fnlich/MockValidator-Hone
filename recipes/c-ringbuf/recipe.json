@@ -1,0 +1,13 @@
+{
+  "task_kind": "bug_fix",
+  "language": "c",
+  "instruction": "Users report that the ring buffer sometimes hands back bytes they never wrote, or loses bytes they did. Please make it behave as documented in ringbuf.h.",
+  "checks": [
+    {
+      "id": "01-full-buffer"
+    },
+    {
+      "id": "02-peek-bounds"
+    }
+  ]
+}

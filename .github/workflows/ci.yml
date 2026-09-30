@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  HONE_SUBNET_COMMIT: d5786a9bfd3a52cf8e89795d196a7d40cc3d2751
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hone-subnet-org/hone-subnet
+          ref: ${{ env.HONE_SUBNET_COMMIT }}
+          path: hone-subnet
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e './hone-subnet[miner]' -e '.[dev]'
+      - run: ruff check honeminer tests
+      - run: pytest -q -m "not docker and not live"
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hone-subnet-org/hone-subnet
+          ref: ${{ env.HONE_SUBNET_COMMIT }}
+          path: hone-subnet
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e './hone-subnet[miner]' -e '.[dev]'
+      - name: Pinned grading image (fallback - build from hone-subnet's Dockerfile)
+        run: |
+          pinned="$(python -c 'from rlvr.policy import RELEASE_POLICY; print(RELEASE_POLICY.v3_image)')"
+          if docker pull "$pinned"; then
+            echo "HONEMINER_IMAGE=$pinned" >> "$GITHUB_ENV"
+          else
+            echo "::warning::pinned image pull failed; building from hone-subnet/docker/polyglot-sandbox"
+            docker run -d -p 127.0.0.1:5000:5000 --name registry registry:2
+            docker build -t localhost:5000/hone-polyglot-sandbox:ci hone-subnet/docker/polyglot-sandbox
+            docker push localhost:5000/hone-polyglot-sandbox:ci
+            digest="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+              localhost:5000/hone-polyglot-sandbox:ci | grep '^localhost:5000/' | head -n 1)"
+            echo "HONEMINER_IMAGE=$digest" >> "$GITHUB_ENV"
+          fi
+      - name: Docker tests (exit 5 = none collected yet)
+        run: pytest -q -m docker || [ $? -eq 5 ]

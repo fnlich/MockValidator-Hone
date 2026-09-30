@@ -1,0 +1,13 @@
+{
+  "task_kind": "feature",
+  "language": "go",
+  "instruction": "Add the Wrap function described in the README to the textutil package.",
+  "checks": [
+    {
+      "id": "01-wrap-basic"
+    },
+    {
+      "id": "02-wrap-edges"
+    }
+  ]
+}

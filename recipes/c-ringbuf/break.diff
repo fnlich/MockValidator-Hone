@@ -1,0 +1,22 @@
+diff --git a/ringbuf.c b/ringbuf.c
+index 809957df3d479b8808564884f64b6ca3d91cb016..10395ddabcec77d34fe53ebc8ad2ee691ed0b2e5 100644
+--- a/ringbuf.c
++++ b/ringbuf.c
+@@ -16,7 +16,7 @@ void rb_free(ringbuf *rb) {
+ 
+ size_t rb_write(ringbuf *rb, const unsigned char *data, size_t n) {
+     size_t written = 0;
+-    while (written < n && rb->len < rb->cap) {
++    while (written < n && rb->len <= rb->cap) {
+         rb->buf[rb->tail] = data[written++];
+         rb->tail = (rb->tail + 1) % rb->cap;
+         rb->len++;
+@@ -36,7 +36,7 @@ size_t rb_read(ringbuf *rb, unsigned char *out, size_t n) {
+ 
+ size_t rb_peek(const ringbuf *rb, unsigned char *out, size_t n) {
+     size_t got = 0, pos = rb->head;
+-    while (got < n && got < rb->len) {
++    while (got < n) {
+         out[got++] = rb->buf[pos];
+         pos = (pos + 1) % rb->cap;
+     }

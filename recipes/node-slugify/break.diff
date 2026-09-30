@@ -1,0 +1,18 @@
+diff --git a/index.js b/index.js
+index 0ff960507834d0981ad384276f5a39536a0ea6d5..28b83d5d9a116c46b76b1f829f9b3e78fe4a6bb1 100644
+--- a/index.js
++++ b/index.js
+@@ -14,11 +14,11 @@
+ function slugify(text, options = {}) {
+   let s = String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+   s = s.toLowerCase();
+-  s = s.replace(/[^a-z0-9]+/g, '-');
++  s = s.replace(/[^a-z0-9]/g, '-');
+   s = s.replace(/^-+|-+$/g, '');
+   const max = options.maxLength;
+   if (max !== undefined && s.length > max) {
+-    const cut = s.slice(0, max + 1);
++    const cut = s.slice(0, max);
+     const boundary = cut.lastIndexOf('-');
+     s = boundary > 0 ? cut.slice(0, boundary) : s.slice(0, max);
+     s = s.replace(/-+$/, '');

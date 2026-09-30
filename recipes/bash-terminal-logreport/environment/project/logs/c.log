@@ -1,0 +1,3 @@
+not a log line
+2026-03-01T08:00:00 ERROR config missing: ports
+2026-03-01T08:00:01 FATAL shutting down

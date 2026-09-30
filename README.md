@@ -1,229 +1,113 @@
-# hone-miner-harness
+# honeminer
 
-A local mock validator for [Hone Subnet](https://github.com/hone-subnet-org/hone-subnet) (Bittensor SN5) miners.
+An automatic Claude CLI miner harness for Hone (Bittensor SN5) V4 tasks.
 
-It reproduces exactly what a real validator does to your miner — sign a problem, dispatch it, authenticate the reply, grade it against hidden tests — with **no chain, no registration, and no problem server**. That closes the gap that otherwise only opens on mainnet, where a mistake costs real TAO.
+When a task arrives, honeminer:
+1. scans the workspace with plain code (no AI): language, build and test commands, the docs that matter, read-only paths;
+2. writes a task-specific `CLAUDE.md`, prompt, hooks-only settings and hook scripts;
+3. runs Claude CLI unattended (`claude -p`, bypass mode, no permission prompts) in a no-network sandbox built
+   from the grading image;
+4. whenever Claude tries to stop, re-checks the work on clean copies with the validator's own code (apply, build,
+   each of Claude's checks must fail on the original and pass on the fix, existing tests still pass) and sends
+   the exact failure back until it passes, time runs out, or the run stalls;
+5. keeps the best answer so far and grades it locally with rlvr's grader; everything lands in `runs/`;
+6. builds the V4 work log (`trajectory.json`, trajectory_v1) from the model traffic the gateway recorded, with plain
+   code and no extra model calls. It is built after Claude stops, so it never changes the run; it is always
+   valid under rlvr's `parse_trajectory` and never larger than the size limit (it shrinks by condensing responses,
+   trimming long outputs, then dropping the oldest turns, each step labeled).
 
-```
-derive a per-miner request id
-  -> sign a TaskRequest for that miner's hotkey
-  -> POST /solve
-  -> verify the reply is signed BY the miner and FOR us
-  -> grade the returned code against HIDDEN tests in the real sandbox
-  -> report the payment the subnet would have assigned
-```
+7. for live offers, `serve` is the endpoint validators call: it checks each signed offer, solves it, uploads the
+   answer and the work log to the offer's slots, and returns a signed reply (see "Mine on testnet").
 
-Every security-relevant step calls the validator's own code from the `rlvr` package (`sign_message`, `verify_signature`, `derive_request_id`, `Verifier`, `compute_payments`). Nothing is re-implemented: a harness that rolled its own signing could drift from the real protocol and tell you a broken miner is fine, which is the one thing a harness must never do.
+## Requirements
+
+- Linux, Docker usable by a **non-root** user (rlvr refuses to grade as root)
+- Python 3.10-3.12
+- Claude Code installed natively (`claude --version`), and either `claude setup-token` (Max plan) or an API key
+- The grading image: `docker pull public.ecr.aws/t3h1r6x1/hone-subnet/polyglot-sandbox@sha256:87f7ea82...`
+  (if the pull is rate-limited, build `hone-subnet/docker/polyglot-sandbox`, push it to a local registry
+  and set `HONEMINER_IMAGE=localhost:5000/...@sha256:...`)
 
 ## Install
 
-Requires the subnet package, because the harness grades with the validator's real sandbox.
-Run these from the **parent directory that holds both clones**, not from inside either one:
+```bash
+git clone https://github.com/hone-subnet-org/hone-subnet ../hone-subnet
+git -C ../hone-subnet checkout d5786a9bfd3a52cf8e89795d196a7d40cc3d2751
+python -m venv .venv && . .venv/bin/activate
+pip install -e '../hone-subnet[miner]' -e '.[dev]'
+cp .env.example .env            # then set CLAUDE_CODE_OAUTH_TOKEN (or HONEMINER_AUTH=api_key + ANTHROPIC_API_KEY)
+python -m honeminer config      # effective settings, secrets masked
+```
+
+## Run locally
 
 ```bash
-git clone https://github.com/hone-subnet-org/hone-subnet
-git clone https://github.com/fnlich/MockValidator-Hone
-
-python3.12 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
-pip install -e "./hone-subnet[chain,miner]"
-pip install -e "./MockValidator-Hone"
+python -m honeminer doctor            # host checks
+python -m honeminer doctor --spike    # Phase 0 go/no-go: one real sandboxed Claude run through the gateway
+python -m honeminer pack              # build + prove every recipe pack (C, Rust, Go, Python, Node, Java, Bash; C++ is the committed yaml-cpp pack)
+python -m honeminer kit cpp-yamlcpp   # see the CLAUDE.md and prompt Claude will get
+python -m honeminer solve cpp-yamlcpp --runs 3
+python -m honeminer bench --runs 3    # every pack in packs/; prints pass/fail per run
+python -m honeminer grade cpp-yamlcpp my.diff   # grade any diff as a validator would
 ```
 
-If you are already inside a checkout, use `.` for that one instead — `pip install -e ".[chain,miner]"`.
-Pointing pip at a path that does not exist gives the confusing
-`is not a valid editable requirement` error rather than "no such directory", because pip
-cannot tell whether you meant a path or a package name.
-
-### On Windows
-
-`bittensor-wallet` and `bittensor-drand` publish macOS and manylinux wheels only — **no
-Windows wheels at any version** — so `pip install -e ".[chain]"` falls back to their sdists
-and tries to bootstrap a Rust toolchain, which typically dies in `rustup-init`. Choosing a
-different Python version does not help.
-
-You do not need that stack to use this harness. Install without `[chain]`:
-
-```powershell
-pip install -e ".[miner]"          # in the hone-subnet checkout
-pip install -e "..\MockValidator-Hone"
-```
-
-With no sr25519 stack importable, `rlvr.protocol` signs and verifies with a deterministic
-HMAC instead — the path it ships for local simulation — and the harness uses `sim-<name>`
-identities rather than ss58 addresses. The full round trip works, and the rejection paths
-still reject: an unauthorized validator is 403, a wrong miner identity is 401, and an
-ss58-shaped signer is refused outright rather than downgraded to HMAC.
-
-What you lose is real sr25519, so this mode does not prove your signing against a live
-validator. Use WSL2 (or Linux/macOS) for that, which is also what the subnet's own README
-requires for a validator.
-
-#### Grading executor
-
-
-Grade with `--executor docker` (Docker Desktop). The default `subprocess` executor is
-POSIX-only in one specific place: its timeout path calls `os.killpg`/`os.getpgid`, which do
-not exist on Windows, and the surrounding `except` catches `OSError` but not the
-`AttributeError` you actually get. Correct solutions still grade fine; a candidate that
-*times out* is reported as a grading error instead of a timeout. The Docker executor guards
-the same call with `os.name == "posix"`, and everything POSIX then happens inside the Linux
-container — which is also how a real validator grades.
-
-## Use
-
-**Against the built-in demo miner** (nothing else needed):
+### Rehearse a whole round
 
 ```bash
-python run_local_miner.py          # terminal 1
-python mock_validator.py           # terminal 2
+python -m honeminer rehearse python-stats --agent reference   # plumbing only, no model tokens
+python -m honeminer rehearse cpp-yamlcpp                       # real Claude as honeminer
+python -m honeminer rehearse cpp-yamlcpp --agent reference --trajectory-max-bytes 20000
 ```
 
-```
-[FAIL] run-length-encode            4/5 hidden  pay=0.000  0.0s
-[SKIP] rust-sum-stdin               0/0 hidden  pay=0.000  0.0s
-         skipped: cannot grade rust here: Rust challenge execution requires the Docker executor
-[PASS] sum-of-digits                5/5 hidden  pay=1.000  0.0s
+A local problem server (on a fake https origin, no network) leases the pack and issues upload slots;
+rlvr's own validator code (`evaluate_round`) sends the offer to six miners: honeminer, the reference answer, a
+slower copy of it, an empty answer, a broken answer, and one that never answers. honeminer downloads the
+workspace, solves, builds the work log for this challenge and hotkey, and uploads both artifacts. The server then
+checks every reply strictly (refs match slots, uploads match the signed sha256/size, the work log parses and is
+bound to this task, challenge, hotkey and answer), and the validator grades the grants in Docker and pays.
+The table shows each miner's reply, commit verdict, grade, latency and payment; `runs/<time>-rehearsal-<pack>/`
+keeps the offer and `rehearsal.json`. Exit code: 0 paid, 1 paid 0, 2 round abandoned. Add `--http` to reach
+honeminer exactly as a validator does: through the real `serve` app, called by rlvr's `LiveSolverClient` with
+Epistula-signed requests, and a signed reply the validator verifies before committing it.
 
-1/2 solved   total payment 1.000   (1 skipped)
-(the subnet pays only for a FULL hidden-suite pass; partial == zero)
-```
+Each solve writes `runs/<time>-<task>/` (facts, CLAUDE.md, prompt, Claude's stream, gate rounds, checks, the
+shipped diff or script, the grade, the recorded `traffic.jsonl` and the `trajectory.json` work log) and appends one
+line to `runs/index.jsonl`. `runs/` holds tasks and model traffic: keep it private.
 
-That output is the whole point. `run-length-encode` passes **4 of 5** hidden tests and earns **nothing** — the built-in solver is wrong on purpose so a first run shows you the subnet's real economics rather than a wall of green.
-
-**Against your own solver:**
+## Mine on testnet
 
 ```bash
-python run_local_miner.py --solver mypkg.mymodule:MySolver
-python mock_validator.py -v
+pip install -e '../hone-subnet[miner,chain]'    # adds bittensor (pinned by hone-subnet)
+btcli subnet register --netuid <NETUID> --network test --wallet.name <W> --wallet.hotkey <H>
+# .env: HONEMINER_MODE=testnet, NETUID, WALLET_NAME, WALLET_HOTKEY, AXON_PORT (open it), AXON_EXTERNAL_IP,
+#       HONEMINER_ANTHROPIC_AUTHORIZATION, and the Claude credential
+python -m honeminer doctor --spike                              # host, chain extras, one real Claude run
+python -m honeminer rehearse cpp-yamlcpp --http                 # a whole signed round, locally
+python -m honeminer serve                                       # advertise the axon and answer offers
 ```
 
-`--solver` takes `module:attribute` naming a Solver instance or a zero-arg callable returning one. A Solver is anything with:
+`serve` refuses to start while any live setting is missing or a required host check fails. For each offer it:
+- accepts it only if it is signed for our hotkey, fresh, not replayed, and from a registered validator with a
+  permit (and at least `HONEMINER_MIN_VALIDATOR_STAKE`), for our slots and a supported task policy;
+- queues it for one of `HONEMINER_SLOTS` solves, and refuses it at once (503) if Claude would get less than
+  `HONEMINER_MIN_SOLVE_S`;
+- solves it on the offer's own deadline, uploads the answer and the work log, and returns the signed reply;
+  when no acceptable reply exists (for example, no valid log fits the slot), it uploads nothing and says why.
 
-```python
-async def solve_task(task, timeout_s) -> object with .code and .raw_response
-async def aclose() -> None
-```
+Private records (keep `runs/` private): `runs/offers.jsonl` (one line per offer: validator, status, error),
+`runs/<time>-offer-<challenge>/` (the offer, the reply, the solve's archive), and `runs/notices.jsonl` (validators'
+failure notices for tasks we answered). Stored tasks and answers are never used to answer offers.
 
-which is the same seam `examples/custom_miner` in the hone-subnet repo uses, so a solver written against that runs here unchanged.
+## Settings
 
-**Against a miner you already run:**
+Every setting is in [`.env.example`](.env.example): model and effort, the 20-minute task budget and reserves,
+the audit round, time notices, sandbox size, auth, concurrency, archive size. A real environment variable wins
+over `.env`, and an invalid value stops startup.
+
+## Develop
 
 ```bash
-python mock_validator.py --url http://your-host:8091 --miner-hotkey 5F...
+pytest -q -m "not docker and not live"   # fast
+pytest -q -m docker                      # sandbox image + Docker, as a non-root user (CI runs these)
+ruff check honeminer tests
 ```
-
-Your miner will reject the harness's key with `403 unauthorized signer`, because it holds no validator permit. Either run it behind `run_local_miner.py`, or start it with `MINER_REQUIRE_VALIDATOR_PERMIT=false` **while testing only**.
-
-## Dispatching to a pool
-
-A real validator deals each problem to many miners at once, and that changes the
-arithmetic: the payment formula's latency term is relative to the **fastest
-correct responder**, so against a single miner it is always `1.0` and the
-0.95-1.0 spread never appears. Pool pass-rate and the difficulty band are
-pool-level signals too.
-
-```bash
-python mock_validator.py --miner 127.0.0.1:8101=//M1 \
-                         --miner 127.0.0.1:8102=//M2 \
-                         --miner 10.0.0.7:8091=5F...
-```
-
-`HOST:PORT[=HOTKEY]`, repeatable. `HOTKEY` is an ss58 address, or a `//Dev` URI
-for local testing; omit it and the harness dev key is used. It is not cosmetic —
-the hotkey is folded into the per-miner request id and must match the reply's
-`Epistula-Signed-By`, so a wrong one makes an honest miner look unauthenticated.
-
-Or from a file, `--miners pool.json`:
-
-```json
-[{"uid": 1, "host": "10.0.0.7", "port": 8091, "hotkey": "5F..."},
- {"uid": 2, "host": "10.0.0.8", "port": 8091, "hotkey": "5G..."}]
-```
-
-A real round against three miners — one fast and correct, one correct but 3s
-slower, one subtly wrong:
-
-```
-=== run-length-encode ===
-  [PASS] uid1 127.0.0.1:8101      5GzrAe…mNME    5/5 hidden  pay=1.0000    0.02s
-  [PASS] uid2 127.0.0.1:8102      5Fhgqg…5xUm    5/5 hidden  pay=0.9994    3.02s
-  [FAIL] uid3 127.0.0.1:8103      5FC2Qt…FTpv    4/5 hidden  pay=0.0000    0.02s
-  pool pass-rate 67%  band=easy
-
-=== leaderboard over 2 graded problem(s), 1 skipped ===
-  1. uid1 127.0.0.1:8101      solved 2/2   payment 2.0000   weight share  40.0%
-  2. uid2 127.0.0.1:8102      solved 2/2   payment 1.9989   weight share  40.0%
-  3. uid3 127.0.0.1:8103      solved 1/2   payment 1.0000   weight share  20.0%
-```
-
-Three things to read out of that. `pay=0.9994` is the latency tiebreaker being
-applied for real — `0.95 + 0.05·2^(-3000/180000)`. `4/5 hidden` pays **zero**.
-And uid1 and uid2 differ by 0.001 in payment yet land on the same 40.0% weight
-share, which is the flat-scoring compression the subnet is built on.
-
-Fan-out is concurrent, with dispatch and grading throttled separately
-(`--dispatch-concurrency`, `--verify-concurrency`) — the same split the real
-validator makes between its I/O-bound fan-out and its sandbox-bound grading.
-
-To run several local miners for testing, give each its own port and hotkey:
-
-```bash
-python run_local_miner.py --port 8101 --miner-uri //M1 --solver mypkg:FastSolver
-python run_local_miner.py --port 8102 --miner-uri //M2 --solver mypkg:OtherSolver
-```
-
-### Options
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--miner` | — | `HOST:PORT[=HOTKEY]`, repeatable, one per miner |
-| `--miners` | — | JSON file describing the pool |
-| `--url` | `http://127.0.0.1:8091` | Single-miner shorthand |
-| `--dispatch-concurrency` | `64` | Miners contacted at once |
-| `--verify-concurrency` | `4` | Sandboxes grading at once |
-| `--problem` | (all) | Only problems whose name contains this substring |
-| `--miner-hotkey` | harness dev key | The miner's ss58 hotkey |
-| `--executor` | `subprocess` | Grading sandbox; `docker` also enables Rust |
-| `--deadline` | `120` | Seconds advertised to the miner |
-| `-v` | off | Print the code the miner returned |
-
-Exit status is `0` when at least one miner fully solved every graded problem, `1` otherwise, so it drops straight into CI.
-
-## Problems
-
-`problems/*.json`. Each carries **public examples** (sent to the miner) and **hidden tests** (kept back, used for grading) — the split that defines the subnet:
-
-```json
-{
-  "name": "sum-of-digits",
-  "language": "python",
-  "entrypoint": "sum_of_digits",
-  "statement": "Return the sum of the decimal digits of a non-negative integer n.",
-  "public_examples": [{"args": [12345], "kwargs": {}, "expected": 15}],
-  "hidden_tests":   [{"args": [0], "kwargs": {}, "expected": 0}]
-}
-```
-
-Add your own by dropping a file in. For `"language": "rust"`, `args` is a single stdin string and `expected` is the stdout to match token-by-token; grading needs `--executor docker` and the pinned sandbox image.
-
-## What it checks
-
-The four acceptance checks a real validator applies before it will grade anything, each verified against a real signature:
-
-1. the reply is HTTP 200 and within the 128 KB cap;
-2. `Epistula-Signed-By` is the miner's hotkey;
-3. the signature verifies **and** is bound to the calling validator;
-4. `problem_id` echoes the per-dispatch request id.
-
-Confirmed failing when they should:
-
-```
-unauthorized validator key  -> HTTP 403 {"error":"unauthorized signer"}
-wrong miner hotkey          -> HTTP 401 {"error":"invalid signature"}
-```
-
-## Limits
-
-- **A pass here is not a guarantee of a pass on the subnet.** Real problems come from a closed-source server and are far harder than these samples; the hidden tests here are ones you wrote.
-- Grading defaults to the `subprocess` executor, which the subnet documents as dev-grade. That is appropriate here — the code being run is your own solver's output, not an adversary's — but use `--executor docker` to grade the way a validator actually will.
-- The harness signs with well-known dev keys and `run_local_miner.py` trusts a fabricated metagraph. It is a test rig: never expose it to the internet or point it at a real wallet.
