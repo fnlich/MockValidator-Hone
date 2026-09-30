@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import threading
 import time
 from collections.abc import Iterable
@@ -122,6 +123,8 @@ def assemble(body: bytes) -> Message:
             data = json.loads(text)
         except ValueError:
             return message
+        if not isinstance(data, dict):
+            return message
         if data.get("type") == "error":
             message.error = data.get("error") or {}
         message.content = [b for b in data.get("content") or [] if isinstance(b, dict)]
@@ -130,12 +133,14 @@ def assemble(body: bytes) -> Message:
         return message
     blocks: dict[int, dict] = {}
     pieces: dict[tuple[int, str], list[str]] = {}  # joined once at the end (no quadratic concatenation)
-    for line in text.splitlines():
+    for line in re.split(r"\r\n|\r|\n", text):
         if not line.startswith("data:"):
             continue
         try:
             event = json.loads(line[5:])
         except ValueError:
+            continue
+        if not isinstance(event, dict):
             continue
         kind = event.get("type")
         if kind == "message_start":
@@ -285,7 +290,8 @@ def turns_from(exchanges: Iterable[Exchange]) -> list[Turn]:
             request = {}
         if not isinstance(request, dict):
             request = {}
-        results.update(_tool_results(request))
+        for call_id, found in _tool_results(request).items():
+            results.setdefault(call_id, found)  # later copies may be rewritten (Claude Code clears old results)
         delta, prefix, new = _delta(request, previous, hasher)
         previous = request
         raw.append({"full": exchange.request if not raw else b"", "delta": delta or exchange.request,
@@ -353,7 +359,7 @@ def _trim_text(text: str, over: int, keep: int) -> str:
 def _trim_json(data: bytes, over: int, keep: int) -> bytes:
     try:
         value = json.loads(data)
-    except ValueError:
+    except (ValueError, RecursionError):
         return _trim_bytes(data, over, keep)
 
     def walk(item):
@@ -365,7 +371,10 @@ def _trim_json(data: bytes, over: int, keep: int) -> bytes:
             return {k: walk(v) for k, v in item.items()}
         return item
 
-    return _canon(walk(value))
+    try:
+        return _canon(walk(value))
+    except RecursionError:  # nesting too deep to walk: trim the bytes instead
+        return _trim_bytes(data, over, keep)
 
 
 def _b64(data: bytes) -> str:
@@ -411,14 +420,14 @@ def _render_turn(index: int, turn: Turn, level: Level, recent: bool, first: bool
                "generated_bytes_b64": "", "reasoning": reasoning, "output": output, "tokens": []}]
     tools = []
     for tool in turn.tools:
-        call_id = tool.call_id[:256]
+        call_id = _clean(tool.call_id)[:256]
         if call_id and call_id not in seen:  # ids must be unique across the whole log
             seen.add(call_id)
             tools.append(replace(tool, call_id=call_id))
     for tool in tools:
         tool_input = _trim_bytes(tool.input, over, keep) if trim else tool.input
-        events.append({"event_type": "tool_call", "call_id": tool.call_id, "tool_name": tool.name[:256] or "tool",
-                       "input_body_b64": _b64(tool_input)})
+        events.append({"event_type": "tool_call", "call_id": tool.call_id,
+                       "tool_name": _clean(tool.name)[:256] or "tool", "input_body_b64": _b64(tool_input)})
     for tool in tools:
         body = INTERRUPTED if tool.output is None else tool.output
         if trim:
@@ -526,7 +535,7 @@ def _try_render(turns: list[Turn], header: Header, submission: bytes, level: Lev
 
     try:
         return render(turns, header, submission, level)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
 
 
@@ -594,8 +603,11 @@ def build_within(turns: list[Turn], header: Header, submission: bytes, max_bytes
     if built is None:
         if isinstance(outcome.get("error"), TrajectoryTooLarge):
             raise outcome["error"]
-        data = minimal(header, submission, turns)
-        if len(data) > max_bytes:
+        try:
+            data = minimal(header, submission, turns)
+        except (ValueError, RecursionError):
+            data = None
+        if data is None or len(data) > max_bytes:
             data = minimal(header, submission)
         if len(data) > max_bytes:
             raise TrajectoryTooLarge(f"the smallest valid work log is {len(data)} bytes; the slot allows {max_bytes}")

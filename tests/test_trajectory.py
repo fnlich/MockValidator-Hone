@@ -325,3 +325,57 @@ def test_a_large_submission_does_not_raise_the_floor():
     assert len(built.data) <= 20_000
     assert parse_trajectory(built.data).submission_sha256 == tj._sha(big)
     assert build_within([], HEADER, big, tj.LOCAL_MAX_BYTES, timeout_s=T).level == "full"  # echoed whole when it fits
+
+
+def test_the_first_copy_of_a_tool_result_is_the_real_one():
+    convo = Conversation()
+    convo.turn(("tool", "t1", "Bash", {"command": "make"}), results={"t1": ("REAL OUTPUT", False)})
+    convo.turn(("text", "next"))
+    # Claude Code clears old tool results to save context; the later copy is not what the tool returned.
+    for message in convo.messages:
+        for block in message["content"] if isinstance(message["content"], list) else []:
+            if block.get("type") == "tool_result":
+                block["content"] = "[Old tool result content cleared]"
+    convo.turn(("text", "done"))
+    (tool,) = [t for turn in convo.turns() for t in turn.tools]
+    assert tool.output == b"REAL OUTPUT"
+
+
+def test_unicode_line_separators_inside_json_do_not_split_sse_events():
+    body = ("data: " + json.dumps({"type": "content_block_start", "index": 0,
+                                   "content_block": {"type": "text", "text": ""}}) + "\n"
+            + "data: " + json.dumps({"type": "content_block_delta", "index": 0,
+                                     "delta": {"type": "text_delta", "text": "line1 line2\x85"}},
+                                    ensure_ascii=False) + "\n"
+            + "data: " + json.dumps({"type": "content_block_delta", "index": 0,
+                                     "delta": {"type": "text_delta", "text": " end"}}) + "\n").encode()
+    assert assemble(body).text("text") == "line1 line2\x85 end"
+
+
+@pytest.mark.parametrize("body", [b"null", b"[]", b'"x"', b"data: 1\n", b"data: []\n"])
+def test_responses_that_are_json_but_not_objects_are_tolerated(body):
+    assert assemble(body).content == []
+    turns = turns_from([Exchange(0, "/v1/messages", 502, b"{}", body)])
+    assert len(turns) == 1 and turns[0].kind == "failure"
+
+
+def test_deeply_nested_tool_input_never_breaks_the_log():
+    deep: object = "x"
+    for _ in range(900):
+        deep = [deep]
+    convo = Conversation()
+    convo.turn(("tool", "t1", "Bash", {"deep": deep}), results={"t1": ("ok", False)})
+    convo.turn(("text", "done"))
+    for limit in (3_000, 20_000, tj.LOCAL_MAX_BYTES):
+        built = build_within(convo.turns(), HEADER, SUBMISSION, limit, timeout_s=T)
+        assert len(built.data) <= limit
+        parse_trajectory(built.data)
+
+
+def test_lone_surrogates_in_tool_names_and_ids_are_cleaned():
+    turn = tj.Turn("turn", b"{}", b"{}", "0" * 64, 0, 1, b"", b"{}", "", "",
+                   tools=(tj.ToolEvent("id\ud800", "Ba\udc00sh", b"{}", b"ok", False),))
+    built = build(turns=[turn] * 1, header=HEADER, submission=SUBMISSION, max_bytes=tj.LOCAL_MAX_BYTES)
+    assert built.level == "full"  # nothing had to be dropped to make it canonical
+    names = [e["tool_name"] for e in events(built.data) if e["event_type"] == "tool_call"]
+    assert "Ba�sh" in names or "Ba?sh" in names
