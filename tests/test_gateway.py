@@ -198,3 +198,99 @@ def test_a_recording_failure_never_reaches_claude(tmp_path, upstream):
     finally:
         gateway.stop()
     assert gateway.recorder.failed
+
+
+def serve_upstream(handler_class):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_class)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
+class Gzipping(BaseHTTPRequestHandler):
+    """An upstream that compresses whenever the client allows it (as api.anthropic.com may)."""
+
+    seen: list = []
+
+    def do_POST(self):  # noqa: N802
+        import gzip
+
+        self.rfile.read(int(self.headers["Content-Length"]))
+        accepted = self.headers.get("Accept-Encoding", "")
+        Gzipping.seen.append(accepted)
+        body = gzip.compress(SSE) if "gzip" in accepted else SSE
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        if body is not SSE:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_claude_always_gets_plain_bytes_even_when_upstream_could_compress(tmp_path):
+    server, url = serve_upstream(Gzipping)
+    traffic = tmp_path / "traffic.jsonl"
+    gateway = make_gateway(tmp_path, url, traffic=traffic)
+    try:
+        with socket.socket(socket.AF_UNIX) as raw:  # a client that does not decode anything
+            raw.connect(str(gateway.config.socket_path))
+            body = message()
+            raw.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                        + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
+            received = b""
+            while chunk := raw.recv(65536):
+                received += chunk
+    finally:
+        gateway.stop()
+        server.shutdown()
+    assert b"message_start" in received and b"content-encoding" not in received.lower()
+    assert "gzip" not in Gzipping.seen[-1]
+    assert gateway.usage.input_tokens == 120
+    assert read_traffic(traffic)[0].response == SSE
+
+
+class Breaking(BaseHTTPRequestHandler):
+    """An upstream that dies halfway through the stream."""
+
+    def do_POST(self):  # noqa: N802
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", "100000")
+        self.end_headers()
+        self.wfile.write(b"event: ping\ndata: {\"type\": \"ping\"}\n\n")
+        self.wfile.flush()
+        self.connection.shutdown(socket.SHUT_RDWR)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_an_upstream_dying_mid_stream_ends_the_connection_cleanly(tmp_path):
+    server, url = serve_upstream(Breaking)
+    gateway = make_gateway(tmp_path, url)
+    try:
+        with socket.socket(socket.AF_UNIX) as raw:
+            raw.settimeout(10)
+            raw.connect(str(gateway.config.socket_path))
+            body = message()
+            raw.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                        + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+            received = b""
+            while chunk := raw.recv(65536):  # must end (connection closed), not hang
+                received += chunk
+    finally:
+        gateway.stop()
+        server.shutdown()
+    assert received.count(b"HTTP/1.1") == 1 and b"502" not in received
+
+
+def test_streamed_usage_is_not_double_counted():
+    sse = (b'data: {"type":"message_start","message":{"usage":{"input_tokens":100,'
+           b'"cache_read_input_tokens":5000,"output_tokens":1}}}\n\n'
+           b'data: {"type":"message_delta","usage":{"input_tokens":100,"cache_read_input_tokens":5000,'
+           b'"output_tokens":42}}\n\n')
+    assert usage_from_body(sse, True) == {"input_tokens": 100, "cache_read_input_tokens": 5000, "output_tokens": 42}

@@ -135,7 +135,7 @@ def usage_from_body(body: bytes, streamed: bool) -> dict:
             usage = event.get("usage")
         for key, value in (usage or {}).items():
             if isinstance(value, int):
-                total[key] = value if key == "output_tokens" else total.get(key, 0) + value
+                total[key] = value  # message_delta usage is cumulative: the last value is the total
     return total
 
 
@@ -178,8 +178,10 @@ class Gateway:
     def upstream_headers(self, headers: dict[str, str]) -> dict[str, str]:
         out = {k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP}
         for key in list(out):
-            if key.lower() in ("authorization", "x-api-key"):
+            if key.lower() in ("authorization", "x-api-key", "accept-encoding"):
                 del out[key]
+        # Uncompressed only: the bytes are relayed as-is to Claude, counted and recorded.
+        out["accept-encoding"] = "identity"
         if self.config.auth == "api_key":
             out["x-api-key"] = self.config.credential
         else:
@@ -233,7 +235,7 @@ class Gateway:
                 url = gateway.config.upstream.rstrip("/") + self.path
                 record = gateway.recorder is not None and is_model_call(self.path)
                 seq = next(gateway._seq) if record else 0
-                status, captured, failed = None, None, True
+                status, captured, failed, started = None, None, True, False
                 try:
                     with gateway._client.stream(self.command, url, headers=headers, content=body) as response:
                         status = response.status_code
@@ -243,6 +245,7 @@ class Gateway:
                                 self.send_header(key, value)
                         self.send_header("Transfer-Encoding", "chunked")
                         self.end_headers()
+                        started = True
                         captured = bytearray()
                         for chunk in response.iter_raw():
                             if not chunk:
@@ -261,8 +264,12 @@ class Gateway:
                         self.wfile.write(b"0\r\n\r\n")
                         failed = False
                 except httpx.HTTPError as exc:
-                    self._json(502, {"type": "error", "error": {"type": "api_error",
-                                                                 "message": f"honeminer gateway: {exc}"}})
+                    if started:
+                        # Mid-stream: a second response cannot follow; end the connection so Claude sees the cut.
+                        self.close_connection = True
+                    else:
+                        self._json(502, {"type": "error", "error": {"type": "api_error",
+                                                                     "message": f"honeminer gateway: {exc}"}})
                 finally:
                     if record:  # after Claude has the whole response; a cut-off stream is a transport error
                         gateway.recorder.put(seq, self.path, None if failed else status, body,
