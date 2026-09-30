@@ -38,3 +38,8 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Rendered prompt text reads better unwrapped.
+"honeminer/kit.py" = ["E501"]
+"tests/test_kit.py" = ["E501"]
