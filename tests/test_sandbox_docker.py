@@ -58,8 +58,10 @@ def test_agent_is_not_root_and_cannot_stop_the_forwarder(sandbox):
     assert sandbox.exec(["id", "-u"]).stdout.strip() != "0"
     kill = ("import os, signal\n"
             "for pid in filter(str.isdigit, os.listdir('/proc')):\n"
+            "    if int(pid) == os.getpid():\n"
+            "        continue\n"
             "    try:\n"
-            "        if b'forwarder' in open(f'/proc/{pid}/cmdline', 'rb').read():\n"
+            "        if b'/task/.kit/forwarder.py' in open(f'/proc/{pid}/cmdline', 'rb').read().split(b'\\0'):\n"
             "            os.kill(int(pid), signal.SIGKILL)\n"
             "    except OSError as exc:\n"
             "        print('refused', exc)\n")
