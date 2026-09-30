@@ -19,6 +19,7 @@ from pathlib import Path
 from honeminer.facts import SANDBOX_ENV
 
 LABEL = "honeminer.role"
+OWNER_LABEL = "honeminer.owner"  # the pid of the honeminer process that started the container
 FORWARD_PORT = 8080
 SOCKET_DIR = "/run/honeminer"
 
@@ -37,6 +38,7 @@ class SandboxSpec:
     baseline: Path  # -> /task/.base (ro)
     socket_dir: Path  # -> /run/honeminer (ro; holds the gateway socket)
     claude_bin: Path  # -> /opt/claude/claude (ro)
+    submission: Path | None = None  # -> /submission (rw); terminal tasks write script.sh here
     cpus: int = 4
     memory_bytes: int = 8 * 1024**3
     pids: int = 4096
@@ -58,8 +60,11 @@ def run_argv(spec: SandboxSpec) -> list[str]:
         (spec.socket_dir, SOCKET_DIR, True),
         (spec.claude_bin, "/opt/claude/claude", True),
     ]
+    if spec.submission is not None:
+        mounts.append((spec.submission, "/submission", False))
     argv = [
         "docker", "run", "-d", "--rm", "--name", spec.name, "--label", f"{LABEL}=agent",
+        "--label", f"{OWNER_LABEL}={os.getpid()}",
         "--network", "none", "--user", spec.user, "--read-only",
         "--tmpfs", f"/tmp:rw,exec,nosuid,size={spec.scratch_bytes}",
         "--cpus", str(spec.cpus), "--memory", str(spec.memory_bytes), "--memory-swap", str(spec.memory_bytes),
@@ -123,12 +128,30 @@ class AgentSandbox:
         self._run(["docker", "rm", "-f", self.spec.name])
 
 
+def _alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    return True
+
+
 def remove_orphans(docker: str | None = None) -> int:
-    """Remove agent containers left over by a crashed run; returns how many."""
+    """Remove agent containers whose honeminer process is gone; returns how many.
+
+    Containers of running honeminer processes (another solve, `serve`, a rehearsal) are never touched.
+    """
 
     binary = docker or shutil.which("docker") or "docker"
-    listed = subprocess.run([binary, "ps", "-aq", "--filter", f"label={LABEL}"], capture_output=True, text=True)
-    ids = listed.stdout.split()
-    if ids:
-        subprocess.run([binary, "rm", "-f", *ids], capture_output=True)
-    return len(ids)
+    listed = subprocess.run([binary, "ps", "-a", "--filter", f"label={LABEL}", "--format",
+                             f'{{{{.ID}}}} {{{{.Label "{OWNER_LABEL}"}}}}'], capture_output=True, text=True)
+    orphans = []
+    for line in listed.stdout.splitlines():
+        parts = line.split()
+        if parts and (len(parts) < 2 or not _alive(parts[1])):
+            orphans.append(parts[0])
+    if orphans:
+        subprocess.run([binary, "rm", "-f", *orphans], capture_output=True)
+    return len(orphans)

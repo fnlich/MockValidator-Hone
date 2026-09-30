@@ -17,7 +17,7 @@ pytestmark = pytest.mark.docker
 def sandbox(tmp_path):
     from rlvr.policy import RELEASE_POLICY
 
-    for name in ("w", "c", "k", "b", "sock"):
+    for name in ("w", "c", "k", "b", "sock", "sub"):
         (tmp_path / name).mkdir()
     (tmp_path / "w" / "main.py").write_text("print('hi')\n")
     (tmp_path / "w" / ".claude").mkdir()
@@ -33,7 +33,8 @@ def sandbox(tmp_path):
     gateway.start()
     spec = SandboxSpec(image=load_env().image or RELEASE_POLICY.v3_image, workspace=tmp_path / "w",
                        checks=tmp_path / "c", kit=tmp_path / "k", claude_md=tmp_path / "CLAUDE.md",
-                       baseline=tmp_path / "b", socket_dir=tmp_path / "sock", claude_bin=fake_claude)
+                       baseline=tmp_path / "b", socket_dir=tmp_path / "sock", claude_bin=fake_claude,
+                       submission=tmp_path / "sub")
     box = AgentSandbox(spec)
     box.start()
     time.sleep(1)
@@ -74,3 +75,15 @@ def test_workspace_is_writable_and_repo_claude_config_is_hidden(sandbox):
     assert sandbox.exec(["ls", "-A", "/work/.claude"]).stdout.strip() == ""
     assert sandbox.exec(["sh", "-c", "echo x > /task/.kit/x"]).returncode != 0
     assert sandbox.exec(["/opt/claude/claude"]).stdout.strip() == "fake-claude"
+
+
+def test_a_terminal_answer_can_be_written_to_submission(sandbox):
+    assert sandbox.exec(["sh", "-c", "printf 'echo ok\\n' > /submission/script.sh"]).returncode == 0
+    assert (sandbox.spec.submission / "script.sh").read_text() == "echo ok\n"
+
+
+def test_orphan_cleanup_leaves_a_running_solve_alone(sandbox):
+    from honeminer.sandbox import remove_orphans
+
+    remove_orphans()  # e.g. a second solve starting while this one runs
+    assert sandbox.exec(["true"]).returncode == 0

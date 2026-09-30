@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from honeminer.sandbox import LABEL, SandboxSpec, exec_argv, forwarder_argv, run_argv
+from honeminer.sandbox import LABEL, OWNER_LABEL, SandboxSpec, exec_argv, forwarder_argv, remove_orphans, run_argv
 
 
 def spec(tmp_path):
@@ -28,3 +28,41 @@ def test_forwarder_runs_as_root_and_exec_as_the_agent():
     assert forwarder_argv("n")[:6] == ["docker", "exec", "-d", "-u", "0", "n"]
     command = exec_argv("n", ["claude", "-p", "x"], {"A": "1"})
     assert "-u" not in command and command[-4:] == ["n", "claude", "-p", "x"] and "A=1" in command
+
+
+def test_terminal_tasks_get_a_writable_submission_mount(tmp_path):
+    (tmp_path / "submission").mkdir()
+    argv = run_argv(SandboxSpec(**{**spec(tmp_path).__dict__, "submission": tmp_path / "submission"}))
+    mount = next(v for v in argv if "target=/submission" in v)
+    assert "readonly" not in mount and str(tmp_path / "submission") in mount
+    assert not any("target=/submission" in v for v in run_argv(spec(tmp_path)))  # repository tasks: none
+
+
+def test_each_container_is_labelled_with_its_owner_process(tmp_path):
+    import os
+
+    argv = run_argv(spec(tmp_path))
+    assert f"{OWNER_LABEL}={os.getpid()}" in argv
+
+
+def test_orphan_cleanup_spares_containers_of_live_processes(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    log = tmp_path / "docker.log"
+    fake = tmp_path / "docker"
+    fake.write_text(f"""#!/bin/sh
+echo "$@" >> {log}
+if [ "$1" = ps ]; then
+  echo "c-live {os.getpid()}"
+  echo "c-dead {dead.pid}"
+  echo "c-old "
+fi
+""")
+    fake.chmod(0o755)
+    assert remove_orphans(str(fake)) == 2
+    removed = [line for line in log.read_text().splitlines() if line.startswith("rm")]
+    assert removed == ["rm -f c-dead c-old"]

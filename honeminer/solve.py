@@ -295,7 +295,8 @@ def solve_with_claude(pack: TaskPack, settings: Settings, *, clock: Clock | None
         spec = SandboxSpec(image=image, workspace=dirs.work, checks=dirs.checks, kit=dirs.kit,
                            claude_md=dirs.kit / "CLAUDE.md", baseline=dirs.baseline, socket_dir=socket_dir,
                            claude_bin=claude_bin, cpus=settings.agent_cpus, memory_bytes=settings.agent_memory,
-                           pids=settings.agent_pids, scratch_bytes=settings.agent_scratch)
+                           pids=settings.agent_pids, scratch_bytes=settings.agent_scratch,
+                           submission=dirs.submission if facts.is_terminal else None)
         sandbox = AgentSandbox(spec)
         sandbox.start()
         return _StoppingAgent(ClaudeAgent(sandbox, settings, archive.root / "claude.stream.jsonl"), sandbox)
