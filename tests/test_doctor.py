@@ -16,3 +16,19 @@ def test_host_checks_cover_the_basics(tmp_path):
             "live mode"} <= names
     live = next(c for c in host_checks(settings) if c.name == "live mode")
     assert not live.ok and "NETUID" in live.detail
+
+
+def test_spike_work_log_check(tmp_path):
+    from honeminer.config import load_env
+    from honeminer.doctor import _spike_work_log
+    from honeminer.trajectory import record_line
+    from tests.test_trajectory import long_run
+
+    settings = load_env(None, environ={})
+    traffic = tmp_path / "traffic.jsonl"
+    missing = _spike_work_log(traffic, settings, b"hay.txt\n")
+    assert not missing.ok  # a valid but empty log means the gateway recorded nothing
+    traffic.write_text("".join(record_line(e.seq, e.path, e.status, e.request, e.response)
+                               for e in long_run(2).exchanges))
+    check = _spike_work_log(traffic, settings, b"hay.txt\n")
+    assert check.ok and "3 model turns" in check.detail

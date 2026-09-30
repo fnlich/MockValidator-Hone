@@ -17,7 +17,7 @@ def test_defaults_load_without_env_file():
     assert settings.time_notices == (0.5, 0.25, 0.1)
     assert settings.agent_memory == 8 * 1024**3
     assert settings.netuid is None
-    assert settings.trajectory is False
+    assert settings.trajectory is True  # the work log is on by default (built after Claude stops)
 
 
 def test_env_example_lists_every_setting_and_loads():
@@ -54,13 +54,8 @@ def test_bad_values_fail_loudly(key, value):
         load_env(None, environ={key: value})
 
 
-def test_warn_fraction_must_be_below_stop_fraction():
-    with pytest.raises(ConfigError):
-        load_env(None, environ={"HONEMINER_TRAJECTORY_WARN_FRAC": "0.95"})
-
-
 def test_live_mode_lists_every_blocker():
-    settings = load_env(None, environ={"HONEMINER_MODE": "testnet"})
+    settings = load_env(None, environ={"HONEMINER_MODE": "testnet", "HONEMINER_TRAJECTORY": "off"})
     blockers = " ".join(settings.live_blockers())
     for fragment in ("NETUID", "AUTHORIZATION", "TRAJECTORY", "CLAUDE_CODE_OAUTH_TOKEN"):
         assert fragment in blockers

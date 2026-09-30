@@ -11,7 +11,7 @@ from pathlib import Path
 SUMMARY_FIELDS = (
     "time", "run", "task", "kind", "language", "prompt_version", "model", "effort", "outcome", "grade",
     "reason", "gate_rounds", "seconds", "budget_s", "input_tokens", "output_tokens", "rate_limited",
-    "authorization",
+    "authorization", "trajectory_bytes", "trajectory_level", "trajectory_ok",
 )
 
 

@@ -3,7 +3,8 @@
 ``doctor`` checks the host. ``doctor --spike`` also runs the real Claude CLI
 once in the sandbox, through the gateway with the injected credential, on a
 tiny task: it proves the relay, the auth path, the hooks (the Stop hook must
-reach the gate) and the Grep tool before any real task depends on them.
+reach the gate) and the Grep tool before any real task depends on them, and
+that the work log built from the recorded traffic is valid.
 """
 
 from __future__ import annotations
@@ -117,7 +118,8 @@ def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
         for item in (root / "kit-out").iterdir():
             shutil.move(str(item), root / "kit" / item.name)
         (root / "kit" / "prompt.txt").write_text(SPIKE_PROMPT)
-        gateway = Gateway(GatewayConfig(root / "sock" / "gateway.sock", settings.model, settings.auth, credential),
+        gateway = Gateway(GatewayConfig(root / "sock" / "gateway.sock", settings.model, settings.auth, credential,
+                                        traffic=root / "traffic.jsonl"),
                           gate=lambda request: gate_calls.append(request) or {"decision": "allow"})
         gateway.start()
         spec = SandboxSpec(image=settings.image or RELEASE_POLICY.v3_image, workspace=root / "work",
@@ -133,6 +135,8 @@ def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
         found = (root / "work" / "found.txt")
         stream = (root / "stream.jsonl").read_text(errors="replace")[-2000:] if (root / "stream.jsonl").exists() else ""
         usage = gateway.usage
+        work_log = _spike_work_log(root / "traffic.jsonl", settings,
+                                   found.read_bytes() if found.is_file() else b"")
         return [
             Check("spike: claude ran unattended", result.ended == "finished" and result.exit_code == 0,
                   f"ended={result.ended} exit={result.exit_code}; tail: {stream[-300:]!r}"),
@@ -141,7 +145,29 @@ def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
             Check("spike: Grep tool + edit", found.is_file() and found.read_text().strip() == "hay.txt",
                   found.read_text().strip() if found.is_file() else "found.txt missing"),
             Check("spike: Stop hook reached the gate", bool(gate_calls), f"{len(gate_calls)} gate calls"),
+            work_log,
         ]
+
+
+def _spike_work_log(traffic: Path, settings: Settings, submission: bytes) -> Check:
+    import hashlib
+
+    from rlvr.v3.trajectory import parse_trajectory
+
+    from honeminer.trajectory import LOCAL_MAX_BYTES, Header, build_from_traffic
+
+    header = Header(task_id=hashlib.sha256(b"honeminer-spike").hexdigest(), challenge_id="local-spike",
+                    miner_hotkey="local", model_name=settings.model)
+    try:
+        built = build_from_traffic(traffic, header, submission, settings.trajectory_max_bytes or LOCAL_MAX_BYTES,
+                                   timeout_s=settings.trajectory_build_s)
+        log = parse_trajectory(built.data)
+    except Exception as exc:  # noqa: BLE001 - reported as a failed check
+        return Check("spike: work log valid", False, f"{type(exc).__name__}: {exc}")
+    turns = sum(event.event_type == "model_turn" for event in log.events)
+    recorded = turns > 0 and built.level != "minimal-fallback" and traffic.is_file()
+    return Check("spike: work log valid", recorded,
+                 f"{len(log.events)} events, {turns} model turns, {len(built.data) / 1024:.1f} KB, level {built.level}")
 
 
 def report(checks: list[Check]) -> tuple[str, bool]:

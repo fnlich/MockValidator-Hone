@@ -167,6 +167,7 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
     archive.write("gate.json", gate.state.history)
     for name in list_checks(dirs.checks):
         archive.write(f"checks/{name}", (dirs.checks / name).read_bytes())
+    work_log = write_work_log(archive, pack, settings, clock, content)
     grade = reason = None
     if grader is not None:
         grade, reason = grader(pack, content)
@@ -178,9 +179,33 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
         grade=grade, reason=reason, gate_rounds=gate.state.rounds, seconds=round(time.monotonic() - started),
         budget_s=settings.task_budget_s, input_tokens=getattr(usage, "input_tokens", None),
         output_tokens=getattr(usage, "output_tokens", None), rate_limited=getattr(usage, "rate_limited", None),
-        authorization=settings.anthropic_authorization or None,
+        authorization=settings.anthropic_authorization or None, trajectory_bytes=work_log.get("bytes"),
+        trajectory_level=work_log.get("level"), trajectory_ok=work_log.get("ok"),
     )
     return SolveResult(content, rank, outcome, gate.state.rounds, agent_result, grade, reason or "")
+
+
+def write_work_log(archive: RunArchive, pack: TaskPack, settings: Settings, clock: Clock, content: bytes) -> dict:
+    """Build ``trajectory.json`` from the recorded traffic. Runs after Claude stopped; never changes the answer.
+
+    The log is never over the limit (``build_within`` asserts it) and any failure is reported, not raised.
+    """
+
+    if not settings.trajectory:
+        return {}
+    from honeminer.trajectory import LOCAL_MAX_BYTES, Header, build_from_traffic
+
+    header = Header(task_id=pack.task_id, challenge_id=f"local-{archive.root.name}"[:128], miner_hotkey="local",
+                    model_name=settings.model)
+    max_bytes = settings.trajectory_max_bytes or LOCAL_MAX_BYTES
+    try:
+        built = build_from_traffic(archive.root / "traffic.jsonl", header, content, max_bytes,
+                                   timeout_s=clock.work_log_timeout(settings.trajectory_build_s))
+    except Exception as exc:  # noqa: BLE001 - the answer must never depend on the log
+        archive.write("trajectory.error.txt", f"{type(exc).__name__}: {exc}\n")
+        return {"ok": False}
+    archive.write("trajectory.json", built.data)
+    return {"ok": True, "bytes": len(built.data), "level": built.level}
 
 
 def verify_facts(facts: Facts, baseline: Path, runner: GateRunner, scratch: Path) -> tuple[Facts, bool]:
@@ -240,7 +265,9 @@ def solve_with_claude(pack: TaskPack, settings: Settings) -> SolveResult:
     os.chmod(socket_dir, 0o755)
 
     def gateway_factory(gate, dirs):
-        gateway = Gateway(GatewayConfig(socket_dir / "gateway.sock", settings.model, settings.auth, credential), gate)
+        traffic = archive.root / "traffic.jsonl" if settings.trajectory else None
+        gateway = Gateway(GatewayConfig(socket_dir / "gateway.sock", settings.model, settings.auth, credential,
+                                        traffic=traffic), gate)
         gateway.start()
         return gateway
 

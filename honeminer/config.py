@@ -167,11 +167,10 @@ SETTINGS: dict[str, Setting] = {
     "gate_round_s": Setting("HONEMINER_GATE_ROUND_S", "60", _int(1, 1800)),
     "audit_round_min_left": Setting("HONEMINER_AUDIT_ROUND_MIN_LEFT", "0.40", _float(0.0, 1.0)),
     "time_notices": Setting("HONEMINER_TIME_NOTICES", "0.50,0.25,0.10", _fractions),
-    # Trajectory (work log): deferred, settings reserved
-    "trajectory": Setting("HONEMINER_TRAJECTORY", "off", _bool),
+    # Trajectory (work log): built after Claude stops, from recorded traffic; never touches the solve
+    "trajectory": Setting("HONEMINER_TRAJECTORY", "on", _bool),
     "trajectory_max_bytes": Setting("HONEMINER_TRAJECTORY_MAX_BYTES", "", _optional_int(1)),
-    "trajectory_warn_frac": Setting("HONEMINER_TRAJECTORY_WARN_FRAC", "0.70", _float(0.0, 1.0)),
-    "trajectory_stop_frac": Setting("HONEMINER_TRAJECTORY_STOP_FRAC", "0.90", _float(0.0, 1.0)),
+    "trajectory_build_s": Setting("HONEMINER_TRAJECTORY_BUILD_S", "5", _float(0.5, 60.0)),
     # Sandbox
     "image": Setting("HONEMINER_IMAGE", "", _image),
     "agent_cpus": Setting("HONEMINER_AGENT_CPUS", "4", _int(1, 256)),
@@ -215,8 +214,7 @@ class Settings:
     time_notices: tuple[float, ...]
     trajectory: bool
     trajectory_max_bytes: int | None
-    trajectory_warn_frac: float
-    trajectory_stop_frac: float
+    trajectory_build_s: float
     image: str
     agent_cpus: int
     agent_memory: int
@@ -288,7 +286,4 @@ def load_env(
     if errors:
         raise ConfigError("invalid settings: " + "; ".join(errors))
 
-    settings = Settings(**parsed)  # type: ignore[arg-type]
-    if settings.trajectory_warn_frac >= settings.trajectory_stop_frac:
-        raise ConfigError("HONEMINER_TRAJECTORY_WARN_FRAC must be below HONEMINER_TRAJECTORY_STOP_FRAC")
-    return settings
+    return Settings(**parsed)  # type: ignore[arg-type]

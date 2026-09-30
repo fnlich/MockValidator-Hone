@@ -125,3 +125,50 @@ def test_claude_is_launched_unattended_with_one_model_and_no_credential():
     models = {v for k, v in env.items() if k.endswith("_MODEL")}
     assert models == {"claude-opus-5-5"}
     assert env["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] == "1000"
+
+
+def test_the_work_log_is_built_from_the_recorded_traffic_and_bound_to_the_answer(stats_pack, tmp_path):
+    from rlvr.v3.trajectory import parse_trajectory
+
+    from honeminer.trajectory import record_line
+    from tests.test_trajectory import long_run
+
+    def record(dirs):  # what the gateway would have written while Claude worked
+        root = dirs.root.parent
+        (root / "traffic.jsonl").write_text("".join(
+            record_line(e.seq, e.path, e.status, e.request, e.response) for e in long_run(3).exchanges))
+        half_fix(dirs)
+
+    result, agent, archive, settings = run_solve(stats_pack, tmp_path, [record, full_fix, lambda d: None])
+    log = parse_trajectory((archive.root / "trajectory.json").read_bytes())
+    assert log.task_id == stats_pack.task_id and log.model_name == settings.model
+    assert log.submission_sha256 == __import__("hashlib").sha256(result.content).hexdigest()
+    assert sum(e.event_type == "model_turn" for e in log.events) == 4
+    line = json.loads((tmp_path / "runs" / "index.jsonl").read_text().splitlines()[-1])
+    assert line["trajectory_ok"] is True and line["trajectory_level"] == "full"
+    assert line["trajectory_bytes"] == (archive.root / "trajectory.json").stat().st_size
+
+
+def test_the_work_log_never_changes_the_answer_or_the_kit(stats_pack, tmp_path):
+    shipped = {}
+    for mode in ("on", "off"):
+        result, agent, archive, _ = run_solve(stats_pack, tmp_path / mode, [half_fix, full_fix, lambda d: None],
+                                              env={"HONEMINER_TRAJECTORY": mode})
+        shipped[mode] = (result.content, result.rank, [r["decision"] for r in agent.replies],
+                         (archive.root / "prompt.txt").read_text(),
+                         (archive.root / "CLAUDE.md").read_text())
+        assert (archive.root / "trajectory.json").is_file() == (mode == "on")
+    assert shipped["on"] == shipped["off"]
+    on = load_env(None, environ={"HONEMINER_TRAJECTORY": "on"})
+    off = load_env(None, environ={"HONEMINER_TRAJECTORY": "off"})
+    assert claude_argv(on) == claude_argv(off) and claude_env(on) == claude_env(off)
+
+
+def test_a_broken_work_log_is_reported_and_the_answer_still_ships(stats_pack, tmp_path, monkeypatch):
+    import honeminer.trajectory as tj
+
+    monkeypatch.setattr(tj, "build_from_traffic", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    result, agent, archive, _ = run_solve(stats_pack, tmp_path, [half_fix, full_fix, lambda d: None])
+    assert result.rank is Rank.CHECKED
+    line = json.loads((tmp_path / "runs" / "index.jsonl").read_text().splitlines()[-1])
+    assert line["trajectory_ok"] is False and "boom" in (archive.root / "trajectory.error.txt").read_text()

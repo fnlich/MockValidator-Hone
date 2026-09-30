@@ -10,9 +10,13 @@ When a task arrives, honeminer:
 4. whenever Claude tries to stop, re-checks the work on clean copies with the validator's own code (apply, build,
    each of Claude's checks must fail on the original and pass on the fix, existing tests still pass) and sends
    the exact failure back until it passes, time runs out, or the run stalls;
-5. keeps the best answer so far and grades it locally with rlvr's grader; everything lands in `runs/`.
+5. keeps the best answer so far and grades it locally with rlvr's grader; everything lands in `runs/`;
+6. builds the V4 work log (`trajectory.json`, trajectory_v1) from the model traffic the gateway recorded, with plain
+   code and no extra model calls. It is built after Claude stops, so it never changes the run; it is always
+   valid under rlvr's `parse_trajectory` and never larger than the size limit (it shrinks by condensing responses,
+   trimming long outputs, then dropping the oldest turns, each step labeled).
 
-Live mining (testnet/mainnet) is not enabled yet: V4 replies need a work log (trajectory), which is deferred.
+Live mining (testnet/mainnet) is not enabled yet: the offer server (`serve`) is the next step.
 
 ## Requirements
 
@@ -47,7 +51,8 @@ python -m honeminer grade cpp-yamlcpp my.diff   # grade any diff as a validator 
 ```
 
 Each solve writes `runs/<time>-<task>/` (facts, CLAUDE.md, prompt, Claude's stream, gate rounds, checks, the
-shipped diff or script, the grade) and appends one line to `runs/index.jsonl`.
+shipped diff or script, the grade, the recorded `traffic.jsonl` and the `trajectory.json` work log) and appends one
+line to `runs/index.jsonl`. `runs/` holds tasks and model traffic: keep it private.
 
 ## Settings
 
