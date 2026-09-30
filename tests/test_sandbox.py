@@ -66,3 +66,14 @@ fi
     assert remove_orphans(str(fake)) == 2
     removed = [line for line in log.read_text().splitlines() if line.startswith("rm")]
     assert removed == ["rm -f c-dead c-old"]
+
+
+def test_gateway_sockets_live_in_a_short_private_directory():
+    import os
+
+    from honeminer.sandbox import socket_dir
+
+    with socket_dir() as path:
+        assert len(str(path / "gateway.sock")) < 100 and path.is_dir()  # AF_UNIX paths max out at 107 bytes
+        assert oct(os.stat(path).st_mode & 0o777) == "0o755"
+    assert not path.exists()

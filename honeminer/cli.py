@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
-from honeminer.config import ConfigError, load_env
+from honeminer.config import SETTINGS, ConfigError, load_env
 from honeminer.pack import RecipeError
-from honeminer.tasks import PackError
+from honeminer.tasks import PACKS_DIR, PackError
 
 
 def _config(args: argparse.Namespace) -> int:
@@ -52,11 +54,20 @@ def _pack(args: argparse.Namespace) -> int:
         if output.exists():
             print(f"{recipe.name}: {output} exists, skipped")
             continue
+        # Built beside its destination and moved into place only when valid: an invalid pack never lands in
+        # packs/ (where bench would solve it and a re-run would skip it).
+        building = output.with_name(f".{recipe.name}.building-{os.getpid()}")
+        shutil.rmtree(building, ignore_errors=True)
         try:
-            result = build_and_validate(recipe, output, image=settings.image)
+            result = build_and_validate(recipe, building, image=settings.image)
         except GradeEnvironmentError as exc:
+            shutil.rmtree(building, ignore_errors=True)
             print(f"cannot build packs here: {exc}", file=sys.stderr)
             return 2
+        if result.ok:
+            building.rename(output)
+        else:
+            shutil.rmtree(building, ignore_errors=True)
         failures += not result.ok
         print(f"{recipe.name}: reference={result.reference} empty={result.empty} "
               f"deterministic={result.deterministic} -> {'ok' if result.ok else 'INVALID'}")
@@ -126,6 +137,15 @@ def _rehearse(args: argparse.Namespace) -> int:
 
     settings = load_env(args.env_file)
     try:
+        for flag, value, name in (("--lease-s", args.lease_s, "rehearsal_lease_s"),
+                                  ("--trajectory-max-bytes", args.trajectory_max_bytes,
+                                   "rehearsal_trajectory_max_bytes")):
+            if value is not None:
+                setting = SETTINGS[name]
+                try:
+                    setting.parse(str(value))
+                except ValueError as exc:
+                    raise ConfigError(f"{flag} {value}: {exc} (as {setting.env})") from None
         rehearsal, root = run_rehearsal(load_pack(args.pack), settings, agent=args.agent, lease_s=args.lease_s,
                                         trajectory_max_bytes=args.trajectory_max_bytes, over_http=args.http)
     except GradeEnvironmentError as exc:
@@ -182,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     solve = commands.add_parser("solve", aliases=["bench"],
                                 help="solve task packs with Claude CLI and grade them locally (alias: bench)")
     solve.add_argument("packs", nargs="*", help="pack names or directories (default: every pack in --dir)")
-    solve.add_argument("--dir", default="packs", help="where packs live (default: packs)")
+    solve.add_argument("--dir", default=str(PACKS_DIR), help="where packs live (default: the repo's packs/)")
     solve.add_argument("--runs", type=int, default=1, help="attempts per pack")
     solve.set_defaults(handler=_solve)
     rehearse = commands.add_parser("rehearse", help="play one whole round locally: problem server, validator, "
@@ -200,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(handler=_serve)
     pack = commands.add_parser("pack", help="build and self-validate task packs from recipes/ (needs Docker)")
     pack.add_argument("recipes", nargs="*", help="recipe names or directories (default: all)")
-    pack.add_argument("--out", default="packs", help="output directory (default: packs)")
+    pack.add_argument("--out", default=str(PACKS_DIR), help="output directory (default: the repo's packs/)")
     pack.set_defaults(handler=_pack)
     return parser
 
@@ -209,6 +229,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.handler(args)
-    except (ConfigError, PackError, RecipeError) as exc:
+    except (ConfigError, PackError, RecipeError, OSError) as exc:
         print(f"honeminer: {exc}", file=sys.stderr)
         return 2

@@ -43,7 +43,15 @@ def _run(argv: list[str], timeout: float = 30) -> subprocess.CompletedProcess:
 
 def claude_binary(settings: Settings) -> Path | None:
     found = settings.claude_bin or shutil.which("claude")
-    return Path(found).resolve() if found and Path(found).exists() else None
+    return Path(found).resolve() if found and Path(found).is_file() else None
+
+
+def _is_elf(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
 
 
 def host_checks(settings: Settings) -> list[Check]:
@@ -60,7 +68,7 @@ def host_checks(settings: Settings) -> list[Check]:
                         image if present.returncode == 0 else f"missing: docker pull {image}"))
     binary = claude_binary(settings)
     version = _run([str(binary), "--version"]) if binary else None
-    with_elf = binary is not None and binary.read_bytes()[:4] == b"\x7fELF"
+    with_elf = binary is not None and _is_elf(binary)
     checks.append(Check("claude binary", bool(binary) and with_elf and version.returncode == 0,
                         f"{binary} {version.stdout.strip() if version else ''}".strip() if binary
                         else "not found; install Claude Code natively or set HONEMINER_CLAUDE_BIN"))
@@ -68,9 +76,12 @@ def host_checks(settings: Settings) -> list[Check]:
     checks.append(Check("credential", bool(credential),
                         f"HONEMINER_AUTH={settings.auth}" + ("" if credential else " but the credential is empty")))
     runs = Path(settings.runs_dir).resolve()
-    runs.mkdir(parents=True, exist_ok=True)
-    free_gb = shutil.disk_usage(runs).free / 1024**3
-    checks.append(Check("disk", free_gb >= 20, f"{free_gb:.0f} GiB free for {runs}"))
+    try:
+        runs.mkdir(parents=True, exist_ok=True)
+        free_gb = shutil.disk_usage(runs).free / 1024**3
+        checks.append(Check("disk", free_gb >= 20, f"{free_gb:.0f} GiB free for {runs}"))
+    except OSError as exc:
+        checks.append(Check("disk", False, f"runs directory {runs} is not usable: {exc}"))
     ntp = _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
     checks.append(Check("clock sync", ntp.stdout.strip() == "yes", ntp.stdout.strip() or "unknown", required=False))
     git = _run(["git", "--version"])
@@ -100,18 +111,22 @@ def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
 
     from honeminer.gateway import Gateway, GatewayConfig
     from honeminer.runner import ClaudeAgent
-    from honeminer.sandbox import AgentSandbox, SandboxSpec
+    from honeminer.sandbox import AgentSandbox, SandboxError, SandboxSpec, socket_dir
 
     binary = claude_binary(settings)
     credential = settings.api_key if settings.auth == "api_key" else settings.oauth_token
     if binary is None or not credential:
         return [Check("spike", False, "needs the claude binary and a credential")]
     gate_calls: list[dict] = []
-    with tempfile.TemporaryDirectory(prefix="honeminer-spike-", dir=Path(settings.runs_dir).resolve()) as scratch:
+    runs = Path(settings.runs_dir).resolve()
+    try:
+        runs.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return [Check("spike", False, f"runs directory {runs} is not usable: {exc}")]
+    with tempfile.TemporaryDirectory(prefix="honeminer-spike-", dir=runs) as scratch, socket_dir() as sockets:
         root = Path(scratch)
-        for name in ("work", "checks", "kit", "base", "sock"):
+        for name in ("work", "checks", "kit", "base"):
             (root / name).mkdir()
-        os.chmod(root / "sock", 0o755)
         (root / "work" / "notes.txt").write_text("nothing here\n")
         (root / "work" / "hay.txt").write_text("a needle in the haystack\n")
         from honeminer.facts import Facts
@@ -124,17 +139,22 @@ def spike(settings: Settings, timeout_s: float = 300) -> list[Check]:
         for item in (root / "kit-out").iterdir():
             shutil.move(str(item), root / "kit" / item.name)
         (root / "kit" / "prompt.txt").write_text(SPIKE_PROMPT)
-        gateway = Gateway(GatewayConfig(root / "sock" / "gateway.sock", settings.model, settings.auth, credential,
+        gateway = Gateway(GatewayConfig(sockets / "gateway.sock", settings.model, settings.auth, credential,
                                         traffic=root / "traffic.jsonl"),
                           gate=lambda request: gate_calls.append(request) or {"decision": "allow"})
-        gateway.start()
+        try:
+            gateway.start()
+        except OSError as exc:
+            return [Check("spike", False, f"the gateway could not start: {exc}")]
         spec = SandboxSpec(image=settings.image or RELEASE_POLICY.v3_image, workspace=root / "work",
                            checks=root / "checks", kit=root / "kit", claude_md=root / "kit" / "CLAUDE.md",
-                           baseline=root / "base", socket_dir=root / "sock", claude_bin=binary)
+                           baseline=root / "base", socket_dir=sockets, claude_bin=binary)
         sandbox = AgentSandbox(spec)
         try:
             sandbox.start()
             result = ClaudeAgent(sandbox, settings, root / "stream.jsonl").run(timeout_s)
+        except (SandboxError, OSError) as exc:
+            return [Check("spike", False, str(exc))]
         finally:
             sandbox.stop()
             gateway.stop()

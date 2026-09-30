@@ -313,14 +313,9 @@ def solve_with_claude(pack: TaskPack, settings: Settings, *, clock: Clock | None
     A live offer passes its own clock and work-log spec, and ``grade=False`` (an offer has no verifier).
     """
 
-    import os
-
     from rlvr.policy import RELEASE_POLICY
 
-    from honeminer.gateway import Gateway, GatewayConfig
-    from honeminer.grade import grade_submission
-    from honeminer.runner import ClaudeAgent
-    from honeminer.sandbox import AgentSandbox, SandboxSpec, remove_orphans
+    from honeminer.sandbox import remove_orphans, socket_dir
     from honeminer.selfcheck import DockerGateRunner
 
     claude_bin = Path(settings.claude_bin or shutil.which("claude") or "").resolve()
@@ -334,9 +329,17 @@ def solve_with_claude(pack: TaskPack, settings: Settings, *, clock: Clock | None
     remove_orphans()
     runner = DockerGateRunner(image)
     archive = RunArchive.create(Path(settings.runs_dir), pack.name, secrets=(credential,))
-    socket_dir = archive.root / "sock"
-    socket_dir.mkdir()
-    os.chmod(socket_dir, 0o755)
+    with socket_dir() as sockets:
+        return _solve_in_sandbox(pack, settings, archive, sockets, runner=runner, image=image, claude_bin=claude_bin,
+                                 credential=credential, clock=clock, work_log=work_log, grade=grade)
+
+
+def _solve_in_sandbox(pack, settings, archive, socket_dir, *, runner, image, claude_bin, credential, clock,
+                      work_log, grade) -> SolveResult:
+    from honeminer.gateway import Gateway, GatewayConfig
+    from honeminer.grade import grade_submission
+    from honeminer.runner import ClaudeAgent
+    from honeminer.sandbox import AgentSandbox, SandboxSpec
 
     def gateway_factory(gate, dirs):
         traffic = archive.root / "traffic.jsonl" if settings.trajectory else None

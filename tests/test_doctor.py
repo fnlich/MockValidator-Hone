@@ -63,3 +63,28 @@ def test_serve_refuses_incomplete_live_settings(monkeypatch, capsys):
     monkeypatch.setenv("HONEMINER_MODE", "testnet")
     assert main(["--env-file", "/nonexistent", "serve"]) == 2
     assert "live mode refused" in capsys.readouterr().err
+
+
+def test_doctor_reports_a_bad_binary_or_runs_dir_instead_of_crashing(tmp_path):
+    checks = host_checks(load_env(None, environ={"HONEMINER_CLAUDE_BIN": str(tmp_path),
+                                                 "HONEMINER_RUNS_DIR": "/proc/honeminer-nope"}))
+    by_name = {c.name: c for c in checks}
+    assert not by_name["claude binary"].ok and not by_name["disk"].ok
+
+
+def test_spike_reports_a_sandbox_that_cannot_start(tmp_path, monkeypatch):
+    from honeminer import doctor
+    from honeminer.sandbox import AgentSandbox, SandboxError
+
+    fake = tmp_path / "claude"
+    fake.write_bytes(b"\x7fELF fake")
+    fake.chmod(0o755)
+
+    def refuse(self):
+        raise SandboxError("agent container did not start: no Docker daemon")
+
+    monkeypatch.setattr(AgentSandbox, "start", refuse)
+    settings = load_env(None, environ={"HONEMINER_CLAUDE_BIN": str(fake), "CLAUDE_CODE_OAUTH_TOKEN": "t",
+                                       "HONEMINER_RUNS_DIR": str(tmp_path / "runs")})
+    (check,) = doctor.spike(settings)
+    assert not check.ok and "no Docker daemon" in check.detail

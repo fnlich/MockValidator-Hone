@@ -101,3 +101,40 @@ def test_cli_config_prints_and_exits(capsys, tmp_path, monkeypatch):
     assert "NETUID is empty" in captured.err
     env.write_text("HONEMINER_SLOTS=zero\n")
     assert main(["--env-file", str(env), "config"]) == 2
+
+
+def test_cli_errors_are_messages_not_tracebacks(tmp_path, monkeypatch, capsys):
+    from honeminer.cli import main
+
+    assert main(["--env-file", "/nonexistent", "grade", "cpp-yamlcpp", str(tmp_path / "missing.diff")]) == 2
+    assert "missing.diff" in capsys.readouterr().err
+    assert main(["--env-file", "/nonexistent", "rehearse", "cpp-yamlcpp", "--agent", "reference",
+                 "--lease-s", "100"]) == 2
+    assert "HONEMINER_REHEARSAL_LEASE_S" in capsys.readouterr().err
+
+
+def test_bench_finds_the_repo_packs_from_any_directory(tmp_path, monkeypatch, capsys):
+    from honeminer.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    assert main(["--env-file", "/nonexistent", "bench", "--runs", "0"]) == 0
+    assert "0/0 passed" in capsys.readouterr().out
+
+
+def test_pack_keeps_only_valid_packs(tmp_path, monkeypatch, capsys):
+    import honeminer.pack as pack_module
+    from honeminer.cli import main
+
+    outcomes = {"c-ringbuf": True, "rust-rle": False}
+
+    def fake_build(recipe, output, image=""):
+        output.mkdir(parents=True)
+        (output / "identity.json").write_text("{}")
+        ok = outcomes[recipe.name]
+        return type("V", (), {"ok": ok, "reference": "passed" if ok else "failed", "empty": "failed",
+                              "deterministic": True})()
+
+    monkeypatch.setattr(pack_module, "build_and_validate", fake_build)
+    code = main(["--env-file", "/nonexistent", "pack", "c-ringbuf", "rust-rle", "--out", str(tmp_path)])
+    assert code == 1 and (tmp_path / "c-ringbuf" / "identity.json").is_file() and not (tmp_path / "rust-rle").exists()
+    assert not [p for p in tmp_path.iterdir() if p.name not in ("c-ringbuf",)]

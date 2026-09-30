@@ -10,3 +10,7 @@ dist/
 runs/
 .honeminer/
 .claude/.stop_hook_blocks
+
+# packs built by `honeminer pack` (the committed fixture stays tracked)
+packs/*
+!packs/cpp-yamlcpp-e6225d04/

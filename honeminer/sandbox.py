@@ -12,7 +12,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -79,6 +81,19 @@ def run_argv(spec: SandboxSpec) -> list[str]:
     for key, value in (*SANDBOX_ENV.items(), *spec.extra_env):
         argv += ["--env", f"{key}={value}"]
     return [*argv, spec.image, "sleep", "infinity"]
+
+
+@contextmanager
+def socket_dir():
+    """A short private directory for the gateway socket (AF_UNIX paths are limited to 107 bytes, so it cannot
+    live under a long runs directory). It is bind-mounted into the sandbox and removed afterwards."""
+
+    path = Path(tempfile.mkdtemp(prefix="hm-sock-"))
+    os.chmod(path, 0o755)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def forwarder_argv(name: str) -> list[str]:
