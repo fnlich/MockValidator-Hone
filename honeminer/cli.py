@@ -119,6 +119,26 @@ def _solve(args: argparse.Namespace) -> int:
     return 0 if passed == len(rows) else 1
 
 
+def _rehearse(args: argparse.Namespace) -> int:
+    from honeminer.grade import GradeEnvironmentError
+    from honeminer.rehearsal import run_rehearsal
+    from honeminer.tasks import load_pack
+
+    settings = load_env(args.env_file)
+    try:
+        rehearsal, root = run_rehearsal(load_pack(args.pack), settings, agent=args.agent, lease_s=args.lease_s,
+                                        trajectory_max_bytes=args.trajectory_max_bytes)
+    except GradeEnvironmentError as exc:
+        print(f"cannot grade here: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"honeminer: {exc}", file=sys.stderr)
+        return 2
+    print(rehearsal.render())
+    print(f"\nreport: {root / 'rehearsal.json'}")
+    return rehearsal.exit_code
+
+
 def _doctor(args: argparse.Namespace) -> int:
     from honeminer.doctor import host_checks, report, spike
 
@@ -153,6 +173,15 @@ def build_parser() -> argparse.ArgumentParser:
     solve.add_argument("--dir", default="packs", help="where packs live (default: packs)")
     solve.add_argument("--runs", type=int, default=1, help="attempts per pack")
     solve.set_defaults(handler=_solve)
+    rehearse = commands.add_parser("rehearse", help="play one whole round locally: problem server, validator, "
+                                   "grading and payment (needs Docker)")
+    rehearse.add_argument("pack", help="pack directory or name under packs/")
+    rehearse.add_argument("--agent", choices=("claude", "reference"), default="claude",
+                          help="honeminer's solver: Claude CLI, or the pack's reference answer (no model)")
+    rehearse.add_argument("--lease-s", type=int, default=None, help="lease length (HONEMINER_REHEARSAL_LEASE_S)")
+    rehearse.add_argument("--trajectory-max-bytes", type=int, default=None,
+                          help="trajectory slot size (HONEMINER_REHEARSAL_TRAJECTORY_MAX_BYTES)")
+    rehearse.set_defaults(handler=_rehearse)
     pack = commands.add_parser("pack", help="build and self-validate task packs from recipes/ (needs Docker)")
     pack.add_argument("recipes", nargs="*", help="recipe names or directories (default: all)")
     pack.add_argument("--out", default="packs", help="output directory (default: packs)")

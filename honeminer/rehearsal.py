@@ -437,3 +437,32 @@ async def rehearse(pack: TaskPack, *, answer: AnswerFn, policy, workdir: Path, l
             "payment": payments.get(uid, 0.0), "detail": detail,
         })
     return rehearsal
+
+
+def run_rehearsal(pack: TaskPack, settings, *, agent: str, lease_s: int | None = None,
+                  trajectory_max_bytes: int | None = None) -> tuple[Rehearsal, Path]:
+    """The ``rehearse`` command: real grading (Docker), and Claude or the reference answer as honeminer's solver."""
+
+    from honeminer.archive import RunArchive
+    from honeminer.grade import grading_policy
+
+    if agent == "reference" and pack.reference() is None:
+        raise ValueError(f"{pack.name} has no reference answer; use --agent claude")
+    policy = grading_policy(settings.image)  # refuses early (root user, no Docker) before anything is written
+    archive = RunArchive.create(Path(settings.runs_dir), f"rehearsal-{pack.name}")
+    if agent == "claude":
+        from honeminer.solve import solve_with_claude
+
+        def solve_fn(offer, clock, spec):
+            return solve_with_claude(offer, settings, clock=clock, work_log=spec, grade=False)
+    else:
+        solve_fn = reference_solve(pack.reference(), settings)
+    rehearsal = asyncio.run(rehearse(
+        pack, answer=answer_with(settings, solve_fn, archive.root / "miner"), policy=policy,
+        workdir=archive.root / "round", lease_s=lease_s or settings.rehearsal_lease_s,
+        trajectory_max_bytes=trajectory_max_bytes or settings.rehearsal_trajectory_max_bytes,
+    ))
+    archive.write("rehearsal.json", rehearsal.to_json())
+    if rehearsal.honeminer.task is not None:
+        archive.write("offer.json", rehearsal.honeminer.task.model_dump(mode="json"))
+    return rehearsal, archive.root

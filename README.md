@@ -16,7 +16,8 @@ When a task arrives, honeminer:
    valid under rlvr's `parse_trajectory` and never larger than the size limit (it shrinks by condensing responses,
    trimming long outputs, then dropping the oldest turns, each step labeled).
 
-Live mining (testnet/mainnet) is not enabled yet: the offer server (`serve`) is the next step.
+Live mining (testnet/mainnet) is not enabled yet: the offer server (`serve`) is the next step. Until then,
+`rehearse` plays one whole round locally (below).
 
 ## Requirements
 
@@ -49,6 +50,24 @@ python -m honeminer solve cpp-yamlcpp --runs 3
 python -m honeminer bench --runs 3    # every pack in packs/; prints pass/fail per run
 python -m honeminer grade cpp-yamlcpp my.diff   # grade any diff as a validator would
 ```
+
+### Rehearse a whole round
+
+```bash
+python -m honeminer rehearse python-stats --agent reference   # plumbing only, no model tokens
+python -m honeminer rehearse cpp-yamlcpp                       # real Claude as honeminer
+python -m honeminer rehearse cpp-yamlcpp --agent reference --trajectory-max-bytes 20000
+```
+
+A local problem server (on a fake https origin, no network) leases the pack and issues upload slots;
+rlvr's own validator code (`evaluate_round`) sends the offer to six miners: honeminer, the reference answer, a
+slower copy of it, an empty answer, a broken answer, and one that never answers. honeminer downloads the
+workspace, solves, builds the work log for this challenge and hotkey, and uploads both artifacts. The server then
+checks every reply strictly (refs match slots, uploads match the signed sha256/size, the work log parses and is
+bound to this task, challenge, hotkey and answer), and the validator grades the grants in Docker and pays.
+The table shows each miner's reply, commit verdict, grade, latency and payment; `runs/<time>-rehearsal-<pack>/`
+keeps the offer and `rehearsal.json`. Exit code: 0 paid, 1 paid 0, 2 round abandoned. In-process replies are
+not Epistula-signed; signing is rehearsed once `serve` exists.
 
 Each solve writes `runs/<time>-<task>/` (facts, CLAUDE.md, prompt, Claude's stream, gate rounds, checks, the
 shipped diff or script, the grade, the recorded `traffic.jsonl` and the `trajectory.json` work log) and appends one

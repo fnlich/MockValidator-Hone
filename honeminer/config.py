@@ -171,6 +171,10 @@ SETTINGS: dict[str, Setting] = {
     "trajectory": Setting("HONEMINER_TRAJECTORY", "on", _bool),
     "trajectory_max_bytes": Setting("HONEMINER_TRAJECTORY_MAX_BYTES", "", _optional_int(1)),
     "trajectory_build_s": Setting("HONEMINER_TRAJECTORY_BUILD_S", "5", _float(0.5, 60.0)),
+    # Rehearsal (a local validator + problem server round; see `rehearse`)
+    "rehearsal_lease_s": Setting("HONEMINER_REHEARSAL_LEASE_S", "1500", _int(600, 7200)),
+    "rehearsal_trajectory_max_bytes": Setting("HONEMINER_REHEARSAL_TRAJECTORY_MAX_BYTES", "67108864",
+                                              _int(1, 64 * 1024**2)),
     # Sandbox
     "image": Setting("HONEMINER_IMAGE", "", _image),
     "agent_cpus": Setting("HONEMINER_AGENT_CPUS", "4", _int(1, 256)),
@@ -215,6 +219,8 @@ class Settings:
     trajectory: bool
     trajectory_max_bytes: int | None
     trajectory_build_s: float
+    rehearsal_lease_s: int
+    rehearsal_trajectory_max_bytes: int
     image: str
     agent_cpus: int
     agent_memory: int
