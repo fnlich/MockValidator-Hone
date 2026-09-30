@@ -119,6 +119,18 @@ def _solve(args: argparse.Namespace) -> int:
     return 0 if passed == len(rows) else 1
 
 
+def _doctor(args: argparse.Namespace) -> int:
+    from honeminer.doctor import host_checks, report, spike
+
+    settings = load_env(args.env_file)
+    checks = host_checks(settings)
+    if args.spike:
+        checks += spike(settings)
+    text, ok = report(checks)
+    print(text)
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="honeminer", description=__doc__)
     parser.add_argument("--env-file", default=".env", help="settings file (default: .env)")
@@ -129,6 +141,9 @@ def build_parser() -> argparse.ArgumentParser:
     grade.add_argument("pack", help="pack directory or name under packs/")
     grade.add_argument("submission", help="unified diff or bash script; '-' for an empty submission")
     grade.set_defaults(handler=_grade)
+    doctor = commands.add_parser("doctor", help="check this host; --spike runs Claude CLI once in the sandbox")
+    doctor.add_argument("--spike", action="store_true", help="Phase 0 go/no-go: one real sandboxed Claude run")
+    doctor.set_defaults(handler=_doctor)
     kit = commands.add_parser("kit", help="show the CLAUDE.md and prompt generated for a task pack")
     kit.add_argument("pack", help="pack directory or name under packs/")
     kit.set_defaults(handler=_kit)
