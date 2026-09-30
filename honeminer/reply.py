@@ -98,7 +98,11 @@ async def answer_offer(task: MinerTaskRequest, settings: Settings, http: httpx.A
         limit = min(limit, settings.trajectory_max_bytes)
     spec = WorkLogSpec(Header(task_id=task.task_id, challenge_id=task.challenge_id, miner_hotkey=hotkey,
                               model_name=settings.model), limit)
-    result = await asyncio.to_thread(solve_fn, pack, clock, spec)
+    try:
+        result = await asyncio.to_thread(solve_fn, pack, clock, spec)
+    finally:
+        # The archive is a verified copy of the offer's (up to 2 GiB); the solve extracted what it needed.
+        (root / f"{role}.tar.zst").unlink(missing_ok=True)
     seconds["solve"] = round(time.monotonic() - started - seconds["download"], 3)
 
     submission = result.content

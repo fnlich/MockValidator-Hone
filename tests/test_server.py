@@ -186,3 +186,47 @@ def test_no_credential_reaches_the_offer_archive(stats_pack, tmp_path):
     for path in (tmp_path / "runs").rglob("*"):
         if path.is_file():
             assert secret.encode() not in path.read_bytes(), path
+
+
+def test_after_a_504_the_slot_stays_taken_until_the_solve_really_ends(stats_pack, tmp_path):
+    import threading
+    import time
+
+    finished = threading.Event()
+
+    def slow(pack, clock, spec):
+        time.sleep(7)
+        finished.set()
+        raise RuntimeError("too late anyway")
+
+    server, _ = make_server(stats_pack, tmp_path, solve_fn=slow,
+                            env={"HONEMINER_MIN_SOLVE_S": "0", "HONEMINER_EXPIRY_MARGIN_S": "30"})
+    body = offer(stats_pack, expires_in=35).model_dump_json().encode()
+
+    async def go():
+        status, _ = await server.handle_solve(signed(body), body)
+        held_after_504 = server.slots.locked()
+        while not finished.is_set():
+            await asyncio.sleep(0.1)
+        for _ in range(30):  # released shortly after the solve thread ends
+            if not server.slots.locked():
+                break
+            await asyncio.sleep(0.1)
+        return status, held_after_504, server.slots.locked()
+
+    status, held_after_504, held_at_the_end = asyncio.run(go())
+    assert status == 504 and held_after_504 and not held_at_the_end
+
+
+def test_an_unauthorized_caller_does_not_fill_the_replay_cache(stats_pack, tmp_path):
+    server, _ = make_server(stats_pack, tmp_path)
+    body = offer(stats_pack).model_dump_json().encode()
+    headers = signed(body, signer="hk-nobody")
+    assert call(server, body, headers).status_code == 403
+    assert server.nonces.check_and_add(headers["Epistula-Uuid"])  # never recorded
+
+
+def test_the_downloaded_workspace_archive_is_deleted_after_the_offer(stats_pack, tmp_path):
+    server, _ = make_server(stats_pack, tmp_path)
+    assert call(server, offer(stats_pack).model_dump_json().encode()).status_code == 200
+    assert not list((tmp_path / "runs").rglob("*.tar.zst"))

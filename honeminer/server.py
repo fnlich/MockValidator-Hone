@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -98,12 +99,13 @@ class OfferServer:
             return _error(413, "request body too large")
         if not self.hotkey or not verify_signature(headers, body, expected_signed_for=self.hotkey):
             return _error(401, "invalid signature")
-        if not self.nonces.check_and_add(headers.get("Epistula-Uuid", "")):
-            return _error(409, "replayed request")
+        # Authorize before recording the nonce, so strangers cannot fill the replay cache.
         if not authorized(self.metagraph, headers.get("Epistula-Signed-By", ""),
                           min_stake=self.settings.min_validator_stake,
                           require_permit=self.settings.require_validator_permit):
             return _error(403, "unauthorized signer")
+        if not self.nonces.check_and_add(headers.get("Epistula-Uuid", "")):
+            return _error(409, "replayed request")
         return None
 
     # -------------------------------------------------------------- /solve
@@ -142,6 +144,15 @@ class OfferServer:
             await asyncio.wait_for(self.slots.acquire(), timeout=wait_s)
         except asyncio.TimeoutError:
             return _error(503, "busy: no solve slot freed in time")
+        solving = threading.Event()  # set while solve_fn runs in its thread (it cannot be cancelled)
+
+        def tracked(pack, solve_clock, spec):
+            solving.set()
+            try:
+                return self.solve_fn(pack, solve_clock, spec)
+            finally:
+                solving.clear()
+
         try:
             if clock.agent_remaining() < self.settings.min_solve_s:
                 return _error(503, "not enough time left for a useful solve")
@@ -150,7 +161,7 @@ class OfferServer:
             try:
                 reply = await asyncio.wait_for(
                     answer_offer(task, self.settings, self.http, origins=self.origins, hotkey=self.hotkey,
-                                 solve_fn=self.solve_fn, workdir=archive.root, clock=clock),
+                                 solve_fn=tracked, workdir=archive.root, clock=clock),
                     timeout=max(1.0, clock.reply_remaining()))
             except ReplyError as exc:
                 archive.write("error.txt", f"ReplyError: {exc}\n")
@@ -169,7 +180,15 @@ class OfferServer:
                             task.slots.submission.hotkey, time.monotonic())
             return 200, reply.response
         finally:
-            self.slots.release()
+            if solving.is_set():  # the reply gave up, the solve did not: keep its slot until it ends
+                asyncio.get_running_loop().create_task(self._release_when_done(solving))
+            else:
+                self.slots.release()
+
+    async def _release_when_done(self, solving: threading.Event) -> None:
+        while solving.is_set():
+            await asyncio.sleep(0.5)
+        self.slots.release()
 
     def _record(self, task: MinerTaskRequest, validator: str, status: int, payload) -> None:
         line = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "challenge_id": task.challenge_id,
