@@ -250,8 +250,7 @@ class Gateway:
                             captured.extend(chunk)
                             self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
                             self.wfile.flush()
-                        self.wfile.write(b"0\r\n\r\n")
-                        failed = False
+                        # Count before the final chunk: once Claude sees the end, the counts are already final.
                         streamed = "text/event-stream" in response.headers.get("content-type", "")
                         with gateway._lock:
                             gateway.usage.requests += 1
@@ -259,6 +258,8 @@ class Gateway:
                                 gateway.usage.rate_limited += 1
                             elif self.path.startswith("/v1/messages") and response.status_code == 200:
                                 gateway.usage.add(usage_from_body(bytes(captured), streamed))
+                        self.wfile.write(b"0\r\n\r\n")
+                        failed = False
                 except httpx.HTTPError as exc:
                     self._json(502, {"type": "error", "error": {"type": "api_error",
                                                                  "message": f"honeminer gateway: {exc}"}})
