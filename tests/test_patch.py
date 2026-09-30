@@ -107,3 +107,44 @@ def test_crlf_and_trailing_bytes_survive_exactly(tmp_path):
     check = make_tree(tmp_path / "check", {"a.txt": b"one\r\ntwo\r\n"})
     subprocess.run(["git", "apply", "-p1", "-"], cwd=check, input=result.diff, check=True)
     assert (check / "a.txt").read_bytes() == b"one\r\nTWO\r\n"
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["empty-nested-repo", "committed-nested-repo"])
+def test_files_inside_a_nested_git_repo_are_still_captured(tmp_path, committed):
+    base = make_tree(tmp_path / "base", {"src/a.py": b"A = 1\n"})
+    work = make_tree(tmp_path / "work", {"src/a.py": b"A = 2\n", "tool/x.py": b"X = 1\n"})
+    subprocess.run(["git", "init", "-q", str(work / "tool")], check=True)  # e.g. `cargo new tool`
+    if committed:
+        env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a",
+               "GIT_COMMITTER_EMAIL": "a@b"}
+        subprocess.run(["git", "-C", str(work / "tool"), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(work / "tool"), "commit", "-qm", "x"], check=True, env=env)
+    result = build_patch(base, work)
+    assert set(result.changed) == {"src/a.py", "tool/x.py"} and result.ok
+    assert b".git/" not in result.diff and b"+X = 1" in result.diff
+
+
+def test_deleting_a_binary_or_non_utf8_file_is_dropped_not_fatal(tmp_path):
+    base = make_tree(tmp_path / "base", {"src/a.py": b"A = 1\n", "blob.bin": b"\x00\x01\x02",
+                                         "latin.txt": "café".encode("latin-1")})
+    work = make_tree(tmp_path / "work", {"src/a.py": b"A = 2\n"})
+    result = build_patch(base, work)
+    assert result.ok, result.rejection
+    assert result.changed == ("src/a.py",)
+    assert set(dict(result.dropped)) == {"blob.bin", "latin.txt"}
+
+
+def test_tracked_files_under_build_like_dirs_can_be_edited(tmp_path):
+    base = make_tree(tmp_path / "base", {"build/config.js": b"a = 1\n", "pkg/target/x.go": b"package x\n"})
+    work = make_tree(tmp_path / "work", {"build/config.js": b"a = 2\n", "pkg/target/x.go": b"package x // y\n",
+                                         "build/out.js": b"generated\n"})
+    result = build_patch(base, work)
+    assert set(result.changed) == {"build/config.js", "pkg/target/x.go"}
+    assert dict(result.dropped) == {"build/out.js": "build output or cache"}
+
+
+def test_protected_paths_with_glob_characters_are_protected(tmp_path):
+    base = make_tree(tmp_path / "base", {"tests/data[1].txt": b"1\n"})
+    work = make_tree(tmp_path / "work", {"tests/data[1].txt": b"2\n"})
+    result = build_patch(base, work, protected=["tests/data[1].txt"])
+    assert result.changed == () and "tests/data[1].txt" in dict(result.dropped)

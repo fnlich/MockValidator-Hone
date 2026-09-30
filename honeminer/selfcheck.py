@@ -23,13 +23,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from rlvr.policy import RELEASE_POLICY
+from rlvr.v3.tree import TreeLimits
+
 from honeminer.answer import Rank
 from honeminer.facts import SANDBOX_ENV, Facts
-from honeminer.patch import build_patch
+from honeminer.patch import PatchBuildError, build_patch
 
 CHECK_NAME = re.compile(r"^\d\d-[A-Za-z0-9._-]+\.sh$")
 OUTPUT_LINES = 40
 CHECK_TIMEOUT_S = 300
+CHECK_OUTPUT_BYTES = 262_144
+# The release round policy's tree limits (rlvr.v3.release.round_policy), for the result-tree check.
+RESULT_TREE_LIMITS = TreeLimits(max_entries=200_000, max_file_bytes=RELEASE_POLICY.v3_max_file_bytes,
+                                max_total_file_bytes=RELEASE_POLICY.v3_workspace_bytes, max_path_bytes=4_096)
 
 
 class EnvironmentFailure(RuntimeError):
@@ -42,13 +49,15 @@ class Exec:
     output: str
     timed_out: bool = False
     oom_killed: bool = False
+    overflow: bool = False  # stdout or stderr went over the limit (the grader fails a script for it)
 
 
 class GateRunner(Protocol):
     def apply(self, root: Path, diff: bytes) -> tuple[bool, str]: ...
 
     def run(self, root: Path, argv: tuple[str, ...], cwd: str, *, checks: Path | None = None,
-            submission: Path | None = None, timeout_s: int = CHECK_TIMEOUT_S) -> Exec: ...
+            submission: Path | None = None, timeout_s: int = CHECK_TIMEOUT_S,
+            max_output_bytes: int = CHECK_OUTPUT_BYTES) -> Exec: ...
 
 
 @dataclass(frozen=True)
@@ -130,7 +139,7 @@ def evaluate(ctx: GateContext, runner: GateRunner) -> Verdict:
         if ctx.facts.is_terminal:
             return _evaluate_terminal(ctx, runner)
         return _evaluate_repository(ctx, runner)
-    except EnvironmentFailure as exc:
+    except (EnvironmentFailure, PatchBuildError) as exc:
         return Verdict(False, Rank.EMPTY, "environment", output=str(exc), env_error=True,
                        hint="This is a problem with the checking environment, not with your work.")
 
@@ -197,7 +206,9 @@ def _evaluate_repository(ctx: GateContext, runner: GateRunner) -> Verdict:
 
 def _evaluate_terminal(ctx: GateContext, runner: GateRunner) -> Verdict:
     from rlvr.policy import RELEASE_POLICY
+    from rlvr.v3.grading import SCRIPT_OUTPUT_BYTES, SCRIPT_TIMEOUT_S
     from rlvr.v3.script import ScriptLimits, validate_script
+    from rlvr.v3.tree import TreeError, inspect_tree
 
     script_path = (ctx.submission or Path("/nonexistent")) / "script.sh"
     if not script_path.is_file():
@@ -211,11 +222,21 @@ def _evaluate_terminal(ctx: GateContext, runner: GateRunner) -> Verdict:
     with tempfile.TemporaryDirectory(prefix="honeminer-gate-", dir=ctx.work.parent) as scratch_name:
         scratch = Path(scratch_name)
         scripted = _copy(ctx.baseline, scratch, "scripted")
+        # Run exactly as the grader does: its timeout and its 1 MiB output limit (overflow fails the script).
         ran = runner.run(scripted, ("/usr/bin/bash", "--noprofile", "--norc", "/submission/script.sh"), tree_cwd,
-                         submission=ctx.submission)
-        if ran.timed_out or ran.oom_killed:
+                         submission=ctx.submission, timeout_s=SCRIPT_TIMEOUT_S, max_output_bytes=SCRIPT_OUTPUT_BYTES)
+        if ran.timed_out or ran.oom_killed or ran.overflow:
+            limit = "output limit (1 MiB of stdout or stderr)" if ran.overflow else "time or memory limit"
             return Verdict(False, Rank.STATIC_OK, "script", "bash --noprofile --norc /submission/script.sh",
-                           _tail(ran.output), hint="The script hit the time or memory limit.", content=script)
+                           _tail(ran.output), hint=f"The script hit the {limit}.", content=script)
+        # The grader refuses a result tree with symlinks, hard links or .git before any check runs.
+        tree = scripted if ctx.facts.result_tree_path in ("", ".") else scripted / ctx.facts.result_tree_path
+        try:
+            inspect_tree(tree, limits=RESULT_TREE_LIMITS, normalize_modes=False)
+        except TreeError as exc:
+            return Verdict(False, Rank.STATIC_OK, "result tree", output=str(exc), content=script,
+                           hint="After your script, the result tree must hold only regular files and directories "
+                                "(no symlinks, hard links or .git).")
         rank = Rank.BUILDS
         if not names:
             return Verdict(False, rank, "checks", content=script,
@@ -263,7 +284,8 @@ class DockerGateRunner:
         return result.status == "applied", result.reason
 
     def run(self, root: Path, argv: tuple[str, ...], cwd: str, *, checks: Path | None = None,
-            submission: Path | None = None, timeout_s: int = CHECK_TIMEOUT_S) -> Exec:
+            submission: Path | None = None, timeout_s: int = CHECK_TIMEOUT_S,
+            max_output_bytes: int = CHECK_OUTPUT_BYTES) -> Exec:
         from rlvr.v3.supervisor import ContainerRequest, Mount, SupervisorError, run_container
 
         mounts = [Mount(root, "/work", False)]
@@ -272,11 +294,13 @@ class DockerGateRunner:
         if submission is not None:
             mounts.append(Mount(submission, "/submission", True))
         request = ContainerRequest(name=self._name("run"), argv=argv, cwd=cwd, mounts=tuple(mounts), stdin=b"",
-                                   timeout_s=timeout_s, max_stdout_bytes=262_144, max_stderr_bytes=262_144,
+                                   timeout_s=timeout_s, max_stdout_bytes=max_output_bytes,
+                                   max_stderr_bytes=max_output_bytes,
                                    trusted=False)
         try:
             result = run_container(request, self.policy.supervisor, self.policy.docker_binary)
         except (SupervisorError, OSError, ValueError) as exc:
             raise EnvironmentFailure(f"sandbox container failed: {exc}") from None
         output = (result.stdout + result.stderr).decode("utf-8", "replace")
-        return Exec(result.exit_code, output, result.timed_out, result.oom_killed)
+        return Exec(result.exit_code, output, result.timed_out, result.oom_killed,
+                    result.stdout_overflow or result.stderr_overflow)

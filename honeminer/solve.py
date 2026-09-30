@@ -22,7 +22,7 @@ from honeminer.config import ConfigError, Settings
 from honeminer.facts import Facts, scan
 from honeminer.guards import StallGuard
 from honeminer.kit import PROMPT_VERSION, KitTiming, write_kit
-from honeminer.patch import build_patch
+from honeminer.patch import PatchBuildError, build_patch
 from honeminer.runner import Agent, AgentResult
 from honeminer.selfcheck import GateContext, GateRunner, evaluate, list_checks
 from honeminer.tasks import TaskPack
@@ -163,13 +163,17 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
 
     # Whatever Claude left behind competes too, so a killed run still ships its best state.
     if not facts.is_terminal:
-        final = build_patch(dirs.baseline, dirs.work, protected=facts.protected)
-        if final.ok and final.diff and keeper.verdict(final.diff) is None:
+        try:
+            final = _final_patch(dirs, facts)
+        except PatchBuildError as exc:  # the held answer still ships
+            archive.write("final_patch.error.txt", f"{exc}\n")
+            final = None
+        if final is not None and final.ok and final.diff and keeper.verdict(final.diff) is None:
             keeper.offer(final.diff, Rank.STATIC_OK, "final state")
     else:
-        script = dirs.submission / "script.sh"
-        if script.is_file() and keeper.verdict(script.read_bytes()) is None:
-            keeper.offer(script.read_bytes(), Rank.STATIC_OK, "final state")
+        script = _final_script(dirs.submission / "script.sh")
+        if script is not None and keeper.verdict(script) is None:
+            keeper.offer(script, Rank.STATIC_OK, "final state")
 
     best = keeper.best
     content, rank = (best.content, best.rank) if best else (b"", Rank.EMPTY)
@@ -222,6 +226,23 @@ def write_work_log(archive: RunArchive, pack: TaskPack, settings: Settings, cloc
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     archive.write("trajectory.json", built.data)
     return {"ok": True, "bytes": len(built.data), "level": built.level, "data": built.data}
+
+
+def _final_script(path: Path) -> bytes | None:
+    """The script Claude left, if the grader would accept it at all (rlvr's validate_script)."""
+
+    from rlvr.policy import RELEASE_POLICY
+    from rlvr.v3.script import ScriptLimits, validate_script
+
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    checked = validate_script(data, ScriptLimits(max_script_bytes=RELEASE_POLICY.v3_script_bytes))
+    return None if checked.status == "rejected" else data
+
+
+def _final_patch(dirs: TaskDirs, facts: Facts):
+    return build_patch(dirs.baseline, dirs.work, protected=facts.protected)
 
 
 def verify_facts(facts: Facts, baseline: Path, runner: GateRunner, scratch: Path) -> tuple[Facts, bool]:

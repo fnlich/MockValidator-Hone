@@ -172,3 +172,32 @@ def test_a_broken_work_log_is_reported_and_the_answer_still_ships(stats_pack, tm
     assert result.rank is Rank.CHECKED
     line = json.loads((tmp_path / "runs" / "index.jsonl").read_text().splitlines()[-1])
     assert line["trajectory_ok"] is False and "boom" in (archive.root / "trajectory.error.txt").read_text()
+
+
+def test_a_final_patch_build_error_still_ships_the_held_answer(stats_pack, tmp_path, monkeypatch):
+    import honeminer.solve as solve_module
+    from honeminer.patch import PatchBuildError
+
+    real = solve_module.build_patch
+    calls = []
+
+    def fails_at_the_end(*args, **kwargs):
+        calls.append(1)
+        if kwargs.get("final"):
+            raise PatchBuildError("git update-index failed")
+        return real(*args, **{k: v for k, v in kwargs.items() if k != "final"})
+
+    monkeypatch.setattr(solve_module, "_final_patch", lambda dirs, facts: fails_at_the_end(final=True))
+    result, *_ = run_solve(stats_pack, tmp_path, [half_fix, full_fix, lambda d: None])
+    assert result.rank is Rank.CHECKED and b"rank = p / 100 * (len(data) - 1)" in result.content
+
+
+def test_an_invalid_final_script_is_never_offered(tmp_path):
+    from honeminer.solve import _final_script
+
+    script = tmp_path / "script.sh"
+    assert _final_script(script) is None  # none written
+    script.write_bytes(b"echo ok\n")
+    assert _final_script(script) == b"echo ok\n"
+    script.write_bytes(b"echo \x00 binary\n")  # the grader rejects it: it must not displace a held script
+    assert _final_script(script) is None

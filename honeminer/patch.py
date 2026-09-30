@@ -6,9 +6,12 @@ everything the grader would refuse or that the answer must not touch is left
 at its baseline state, and every such path is reported so Claude can be told:
 
 - protected paths: task build files (``.rlvr/``, ``.prebuilt/``) and existing tests;
-- build-owned paths: files the task's own build rewrites (recorded at prepare);
-- build output and caches (``__pycache__``, ``target/``, ``node_modules`` ...);
-- binaries, symlinks, non-UTF-8 files, and new files over the size limit.
+- build-owned paths: files the task's own build rewrites (when the caller knows them);
+- new build output and caches (``__pycache__``, ``target/``, ``node_modules`` ...);
+- binaries, symlinks, non-UTF-8 files (added, changed or deleted), and new files over the size limit.
+
+Files are listed by walking the tree (skipping every ``.git``), not by ``git add``: a nested repository
+(``git init`` or ``cargo new`` inside the task) would otherwise hide its files or stop the build.
 
 The result is checked with rlvr's own ``static_rejection``.
 """
@@ -56,7 +59,8 @@ class PatchResult:
 
 
 def _matches(path: str, patterns: Iterable[str]) -> bool:
-    return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+    # An exact path matches itself even when it contains glob characters like "[".
+    return any(path == pattern or fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 
 
 class _Index:
@@ -100,8 +104,18 @@ def _baseline_index(baseline: Path, git_dir: Path) -> _Index:
     return index
 
 
+def _text_problem(data: bytes) -> str | None:
+    if b"\x00" in data:
+        return "binary file"
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return "not UTF-8 text"
+    return None
+
+
 def _classify(
-    work: Path, path: str, status: str, protected: tuple[str, ...], build_owned: set[str]
+    work: Path, baseline: Path, path: str, status: str, protected: tuple[str, ...], build_owned: set[str]
 ) -> str | None:
     """Why a changed path must stay at baseline, or None to keep the change."""
 
@@ -109,10 +123,15 @@ def _classify(
         return "rewritten by the task's build"
     if _matches(path, protected):
         return "protected (task build files and existing tests are read-only)"
-    if _matches(path, BUILD_OUTPUT):
+    if status == "A" and _matches(path, BUILD_OUTPUT):
         return "build output or cache"
     if status == "D":
-        return None
+        # git writes "Binary files differ" (or non-UTF-8 text) for such a deletion; the grader refuses it.
+        try:
+            problem = _text_problem((baseline / path).read_bytes())
+        except OSError:
+            return None
+        return None if problem is None else f"deleting a {problem} cannot be expressed in the patch"
     target = work / path
     if target.is_symlink():
         return "symlink (the grader accepts regular files only)"
@@ -120,15 +139,38 @@ def _classify(
         data = target.read_bytes()
     except OSError:
         return "unreadable"
-    if b"\x00" in data:
-        return "binary file"
-    try:
-        data.decode("utf-8")
-    except UnicodeDecodeError:
-        return "not UTF-8 text"
+    problem = _text_problem(data)
+    if problem is not None:
+        return problem
     if status == "A" and len(data) > NEW_FILE_MAX_BYTES:
         return f"new file over {NEW_FILE_MAX_BYTES // 1024} KiB"
     return None
+
+
+def _tree_paths(root: Path) -> set[bytes]:
+    """Every file and symlink under ``root``, skipping any ``.git`` (a nested repository's own data)."""
+
+    found: set[bytes] = set()
+    for directory, dirnames, filenames in os.walk(root):
+        relative = Path(directory).relative_to(root)
+        for name in list(dirnames):
+            if name == ".git":
+                dirnames.remove(name)
+            elif os.path.islink(os.path.join(directory, name)):
+                dirnames.remove(name)
+                found.add(os.fsencode(relative / name))
+        found.update(os.fsencode(relative / name) for name in filenames if name != ".git")
+    return found
+
+
+def _stage(index: _Index, work: Path) -> None:
+    """Make the index hold exactly the work tree's files (baseline paths that are gone become deletions)."""
+
+    tracked = {p for p in index.run(work, "ls-files", "-z").split(b"\0") if p}
+    paths = sorted(tracked | _tree_paths(work))
+    if paths:
+        index.run(work, "update-index", "--add", "--remove", "--replace", "-z", "--stdin",
+                  stdin=b"\0".join(paths) + b"\0")
 
 
 def build_patch(
@@ -144,7 +186,7 @@ def build_patch(
     owned = set(build_owned)
     with tempfile.TemporaryDirectory(prefix="honeminer-patch-") as scratch:
         index = _baseline_index(Path(baseline), Path(scratch) / "git")
-        index.run(work, "add", "-A", "-f", ".")
+        _stage(index, Path(work))
         listing = index.run(work, "diff", "--cached", "--name-status", "--no-renames", "-z", "HEAD")
         fields = listing.decode("utf-8", "surrogateescape").split("\0")
         entries = [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2)]
@@ -152,7 +194,7 @@ def build_patch(
         dropped: list[tuple[str, str]] = []
         kept: list[str] = []
         for status, path in entries:
-            reason = _classify(Path(work), path, status[0], protected_patterns, owned)
+            reason = _classify(Path(work), Path(baseline), path, status[0], protected_patterns, owned)
             if reason is None:
                 kept.append(path)
             else:

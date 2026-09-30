@@ -17,7 +17,7 @@ class HostRunner:
         result = subprocess.run(["git", "apply", "-p1", "-"], cwd=root, input=diff, capture_output=True)
         return result.returncode == 0, result.stderr.decode()
 
-    def run(self, root, argv, cwd, *, checks=None, submission=None, timeout_s=300):
+    def run(self, root, argv, cwd, *, checks=None, submission=None, timeout_s=300, max_output_bytes=262_144):
         mapped = []
         for arg in argv:
             if checks is not None and arg.startswith("/task/checks/"):
@@ -161,3 +161,46 @@ def test_terminal_script_passes_with_a_real_check(terminal_task):
     assert verdict.passed, verdict.message()
     (ctx.checks / "02-logs.sh").write_text("test -f project/logs/a.log\n")
     assert "passes without your script" in evaluate(ctx, HostRunner()).hint
+
+
+def test_a_patch_that_cannot_be_built_is_an_environment_problem_not_a_crash(stats_task, monkeypatch):
+    from honeminer.patch import PatchBuildError
+
+    _, ctx = stats_task
+
+    def broken(*args, **kwargs):
+        raise PatchBuildError("git update-index failed")
+
+    monkeypatch.setattr("honeminer.selfcheck.build_patch", broken)
+    verdict = evaluate(ctx, HostRunner())
+    assert verdict.env_error and not verdict.passed and "update-index" in verdict.output
+
+
+def test_a_script_that_leaves_a_symlink_in_the_result_tree_fails_like_the_grader(terminal_task):
+    recipe, ctx = terminal_task
+    ctx.work.mkdir()
+    script = (recipe.root / "reference.sh").read_text() + "\nln -s summary.txt report/latest.txt\n"
+    (ctx.submission / "script.sh").write_text(script)
+    (ctx.checks / "01-summary.sh").write_text("grep -qx 'ERROR 4' project/report/summary.txt\n")
+    verdict = evaluate(ctx, HostRunner())
+    assert not verdict.passed and verdict.stage == "result tree" and "unsafe entry" in verdict.output
+
+
+def test_script_output_uses_the_graders_limit_and_overflow_fails(terminal_task):
+    recipe, ctx = terminal_task
+    ctx.work.mkdir()
+    shutil.copy(recipe.root / "reference.sh", ctx.submission / "script.sh")
+    (ctx.checks / "01-summary.sh").write_text("grep -qx 'ERROR 4' project/report/summary.txt\n")
+    seen = {}
+
+    class Overflowing(HostRunner):
+        def run(self, root, argv, cwd, **kwargs):
+            if argv[-1] == "/submission/script.sh":
+                seen.update(kwargs)
+                result = super().run(root, argv, cwd, **kwargs)
+                return Exec(result.exit_code, result.output, overflow=True)
+            return super().run(root, argv, cwd, **kwargs)
+
+    verdict = evaluate(ctx, Overflowing())
+    assert seen["max_output_bytes"] == 1 << 20
+    assert not verdict.passed and "output limit" in verdict.hint
