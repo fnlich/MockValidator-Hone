@@ -86,6 +86,19 @@ class TaskPack:
         return destination
 
 
+def offer_pack(task, root: Path) -> TaskPack:
+    """A pack for a live offer: its identity plus the downloaded environment archive (no verifier, no reference).
+
+    ``root`` must hold ``<role>.tar.zst`` as downloaded and digest-checked by rlvr's ``download_artifact``.
+    """
+
+    identity = task.identity
+    role = "terminal_environment" if isinstance(identity, TerminalScriptTaskIdentity) else "workspace"
+    if task.workspace.artifact_role != role or not (root / f"{role}.tar.zst").is_file():
+        raise PackError(f"offer {task.challenge_id}: no {role} archive")
+    return TaskPack(root=root, identity=identity, refs={role: task.workspace}, task_id=task.task_id)
+
+
 def resolve_pack_path(name_or_path: str | Path) -> Path:
     """Accept a pack directory, or the name of one under ``packs/``."""
 

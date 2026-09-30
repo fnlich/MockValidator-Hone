@@ -116,6 +116,16 @@ class SolveResult:
     agent: AgentResult | None
     grade: str | None = None
     grade_reason: str = ""
+    trajectory: bytes | None = None  # the work log for ``content``; None when it is off or could not be built
+    trajectory_error: str = ""
+
+
+@dataclass(frozen=True)
+class WorkLogSpec:
+    """Who the work log is for: a live offer's header and its trajectory slot size."""
+
+    header: object  # honeminer.trajectory.Header
+    max_bytes: int
 
 
 AgentFactory = Callable[[TaskDirs, Facts, Clock], Agent]
@@ -123,7 +133,8 @@ AgentFactory = Callable[[TaskDirs, Facts, Clock], Agent]
 
 def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_factory: AgentFactory,
           archive: RunArchive, clock: Clock | None = None, gateway_factory=None,
-          grader: Callable[[TaskPack, bytes], tuple[str, str]] | None = None) -> SolveResult:
+          grader: Callable[[TaskPack, bytes], tuple[str, str]] | None = None,
+          work_log: WorkLogSpec | None = None) -> SolveResult:
     clock = clock or Clock.for_task(settings)
     started = time.monotonic()
     dirs, facts = prepare(pack, archive.root / "task")
@@ -167,7 +178,7 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
     archive.write("gate.json", gate.state.history)
     for name in list_checks(dirs.checks):
         archive.write(f"checks/{name}", (dirs.checks / name).read_bytes())
-    work_log = write_work_log(archive, pack, settings, clock, content)
+    log = write_work_log(archive, pack, settings, clock, content, work_log)
     grade = reason = None
     if grader is not None:
         grade, reason = grader(pack, content)
@@ -179,13 +190,15 @@ def solve(pack: TaskPack, settings: Settings, *, runner: GateRunner, agent_facto
         grade=grade, reason=reason, gate_rounds=gate.state.rounds, seconds=round(time.monotonic() - started),
         budget_s=settings.task_budget_s, input_tokens=getattr(usage, "input_tokens", None),
         output_tokens=getattr(usage, "output_tokens", None), rate_limited=getattr(usage, "rate_limited", None),
-        authorization=settings.anthropic_authorization or None, trajectory_bytes=work_log.get("bytes"),
-        trajectory_level=work_log.get("level"), trajectory_ok=work_log.get("ok"),
+        authorization=settings.anthropic_authorization or None, trajectory_bytes=log.get("bytes"),
+        trajectory_level=log.get("level"), trajectory_ok=log.get("ok"),
     )
-    return SolveResult(content, rank, outcome, gate.state.rounds, agent_result, grade, reason or "")
+    return SolveResult(content, rank, outcome, gate.state.rounds, agent_result, grade, reason or "",
+                       trajectory=log.get("data"), trajectory_error=log.get("error", ""))
 
 
-def write_work_log(archive: RunArchive, pack: TaskPack, settings: Settings, clock: Clock, content: bytes) -> dict:
+def write_work_log(archive: RunArchive, pack: TaskPack, settings: Settings, clock: Clock, content: bytes,
+                   spec: WorkLogSpec | None = None) -> dict:
     """Build ``trajectory.json`` from the recorded traffic. Runs after Claude stopped; never changes the answer.
 
     The log is never over the limit (``build_within`` asserts it) and any failure is reported, not raised.
@@ -195,17 +208,20 @@ def write_work_log(archive: RunArchive, pack: TaskPack, settings: Settings, cloc
         return {}
     from honeminer.trajectory import LOCAL_MAX_BYTES, Header, build_from_traffic
 
-    header = Header(task_id=pack.task_id, challenge_id=f"local-{archive.root.name}"[:128], miner_hotkey="local",
-                    model_name=settings.model)
-    max_bytes = settings.trajectory_max_bytes or LOCAL_MAX_BYTES
+    if spec is not None:
+        header, max_bytes = spec.header, spec.max_bytes
+    else:
+        header = Header(task_id=pack.task_id, challenge_id=f"local-{archive.root.name}"[:128], miner_hotkey="local",
+                        model_name=settings.model)
+        max_bytes = settings.trajectory_max_bytes or LOCAL_MAX_BYTES
     try:
         built = build_from_traffic(archive.root / "traffic.jsonl", header, content, max_bytes,
                                    timeout_s=clock.work_log_timeout(settings.trajectory_build_s))
     except Exception as exc:  # noqa: BLE001 - the answer must never depend on the log
         archive.write("trajectory.error.txt", f"{type(exc).__name__}: {exc}\n")
-        return {"ok": False}
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     archive.write("trajectory.json", built.data)
-    return {"ok": True, "bytes": len(built.data), "level": built.level}
+    return {"ok": True, "bytes": len(built.data), "level": built.level, "data": built.data}
 
 
 def verify_facts(facts: Facts, baseline: Path, runner: GateRunner, scratch: Path) -> tuple[Facts, bool]:
@@ -236,8 +252,12 @@ def verify_facts(facts: Facts, baseline: Path, runner: GateRunner, scratch: Path
     return replace(facts, build_cmd=build, test_cmd=test_cmd), tests_pass
 
 
-def solve_with_claude(pack: TaskPack, settings: Settings) -> SolveResult:
-    """The production path: real gateway, sandboxed Claude CLI, grading-identical gate containers."""
+def solve_with_claude(pack: TaskPack, settings: Settings, *, clock: Clock | None = None,
+                      work_log: WorkLogSpec | None = None, grade: bool = True) -> SolveResult:
+    """The production path: real gateway, sandboxed Claude CLI, grading-identical gate containers.
+
+    A live offer passes its own clock and work-log spec, and ``grade=False`` (an offer has no verifier).
+    """
 
     import os
 
@@ -284,8 +304,8 @@ def solve_with_claude(pack: TaskPack, settings: Settings) -> SolveResult:
         result = grade_submission(task, content, image=image)
         return result.status, result.reason_code or result.reason
 
-    return solve(pack, settings, runner=runner, agent_factory=agent_factory, archive=archive,
-                 gateway_factory=gateway_factory, grader=grader)
+    return solve(pack, settings, runner=runner, agent_factory=agent_factory, archive=archive, clock=clock,
+                 gateway_factory=gateway_factory, grader=grader if grade else None, work_log=work_log)
 
 
 class _StoppingAgent:
