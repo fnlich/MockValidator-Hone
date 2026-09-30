@@ -6,3 +6,7 @@ data/
 *.egg-info/
 build/
 dist/
+.env
+runs/
+.honeminer/
+.claude/.stop_hook_blocks
