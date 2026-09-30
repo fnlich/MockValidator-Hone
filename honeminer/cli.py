@@ -97,6 +97,28 @@ def _kit(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def _solve(args: argparse.Namespace) -> int:
+    from honeminer.solve import solve_with_claude
+    from honeminer.tasks import list_packs, load_pack
+
+    settings = load_env(args.env_file)
+    if settings.live:
+        print("solve runs local task packs; use `serve` for live offers", file=sys.stderr)
+        return 2
+    packs = [load_pack(p) for p in (args.packs or [str(p) for p in list_packs(Path(args.dir))])]
+    rows = []
+    for pack in packs:
+        for attempt in range(1, args.runs + 1):
+            result = solve_with_claude(pack, settings)
+            rows.append((pack.name, attempt, result.grade or "-", result.outcome, result.gate_rounds,
+                         result.rank.name.lower()))
+            print(f"{pack.name} #{attempt}: grade={result.grade} outcome={result.outcome} "
+                  f"gate_rounds={result.gate_rounds} held={result.rank.name.lower()}", flush=True)
+    passed = sum(row[2] == "passed" for row in rows)
+    print(f"\n{passed}/{len(rows)} passed")
+    return 0 if passed == len(rows) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="honeminer", description=__doc__)
     parser.add_argument("--env-file", default=".env", help="settings file (default: .env)")
@@ -110,6 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
     kit = commands.add_parser("kit", help="show the CLAUDE.md and prompt generated for a task pack")
     kit.add_argument("pack", help="pack directory or name under packs/")
     kit.set_defaults(handler=_kit)
+    solve = commands.add_parser("solve", aliases=["bench"],
+                                help="solve task packs with Claude CLI and grade them locally (alias: bench)")
+    solve.add_argument("packs", nargs="*", help="pack names or directories (default: every pack in --dir)")
+    solve.add_argument("--dir", default="packs", help="where packs live (default: packs)")
+    solve.add_argument("--runs", type=int, default=1, help="attempts per pack")
+    solve.set_defaults(handler=_solve)
     pack = commands.add_parser("pack", help="build and self-validate task packs from recipes/ (needs Docker)")
     pack.add_argument("recipes", nargs="*", help="recipe names or directories (default: all)")
     pack.add_argument("--out", default="packs", help="output directory (default: packs)")
