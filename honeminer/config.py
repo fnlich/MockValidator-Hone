@@ -144,6 +144,7 @@ SETTINGS: dict[str, Setting] = {
     "netuid": Setting("NETUID", "", _optional_int(0)),
     "wallet_name": Setting("WALLET_NAME", "default", _text),
     "wallet_hotkey": Setting("WALLET_HOTKEY", "default", _text),
+    "axon_host": Setting("AXON_HOST", "0.0.0.0", _text),
     "axon_port": Setting("AXON_PORT", "8091", _int(1, 65_535)),
     "axon_external_ip": Setting("AXON_EXTERNAL_IP", "", _text),
     "anthropic_authorization": Setting("HONEMINER_ANTHROPIC_AUTHORIZATION", "", _text),
@@ -155,6 +156,12 @@ SETTINGS: dict[str, Setting] = {
     "oauth_token": Setting("CLAUDE_CODE_OAUTH_TOKEN", "", _text, secret=True),
     "api_key": Setting("ANTHROPIC_API_KEY", "", _text, secret=True),
     "max_budget_usd": Setting("HONEMINER_MAX_BUDGET_USD", "", _optional_float(0.0)),
+    # Serving live offers (`serve`)
+    "min_solve_s": Setting("HONEMINER_MIN_SOLVE_S", "300", _int(0, 3600)),
+    "max_request_bytes": Setting("HONEMINER_MAX_REQUEST_BYTES", "1000000", _int(1024, 10_000_000)),
+    "metagraph_sync_s": Setting("HONEMINER_METAGRAPH_SYNC_S", "300", _int(10, 86_400)),
+    "min_validator_stake": Setting("HONEMINER_MIN_VALIDATOR_STAKE", "0", _float(0.0, 1e12)),
+    "require_validator_permit": Setting("HONEMINER_REQUIRE_VALIDATOR_PERMIT", "on", _bool),
     # Concurrency
     "slots": Setting("HONEMINER_SLOTS", "1", _int(1, 64)),
     "backoff_429_s": Setting("HONEMINER_429_BACKOFF_S", "30", _int(0, 3600)),
@@ -196,6 +203,7 @@ class Settings:
     netuid: int | None
     wallet_name: str
     wallet_hotkey: str
+    axon_host: str
     axon_port: int
     axon_external_ip: str
     anthropic_authorization: str
@@ -206,6 +214,11 @@ class Settings:
     oauth_token: str
     api_key: str
     max_budget_usd: float | None
+    min_solve_s: int
+    max_request_bytes: int
+    metagraph_sync_s: int
+    min_validator_stake: float
+    require_validator_permit: bool
     slots: int
     backoff_429_s: int
     task_budget_s: int
